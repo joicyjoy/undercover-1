@@ -73,8 +73,8 @@ def test_a_request_never_gets_a_second_recommendation(store):
     assert not store.save_recommendation("REQ-7001", {**RECOMMENDATION, "x": 1})
     assert store.start_request("REQ-7001") is None
     review = {"outcome": "approve", "notes": "", "reviewed_by": "Priya Nair"}
-    assert store.record_review("REQ-7001", review) == "in_progress"
-    assert store.record_review("REQ-7001", review) == "in_progress"
+    assert store.record_review("REQ-7001", review) == "decided"
+    assert store.record_review("REQ-7001", review) == "decided"
     assert (
         store.record_review(
             "REQ-7001",
@@ -84,10 +84,12 @@ def test_a_request_never_gets_a_second_recommendation(store):
     )
     request = store.get_request("REQ-7001")
     assert request is not None
+    assert request["status"] == "decided"
     assert request["recommendation"] == RECOMMENDATION
     assert request["review"]["outcome"] == "approve"
     stages = [step["stage"] for step in request["steps"]]
     assert stages.count("preparing_recommendation") == 1
+    assert stages.count("completed") == 1
 
 
 def test_restart_keeps_requests_in_progress_and_closes_stopped_runs(store):
@@ -313,7 +315,7 @@ def test_support_review_hands_off_to_agent_or_decides_left_for_support(
 
     assert early.status_code == 409
     assert response.status_code == 200
-    assert response.json()["status"] == "in_progress"
+    assert response.json()["status"] == "decided"
     assert repeat.status_code == 200
     assert conflicting.status_code == 409
     assert resumed == ["REQ-7001", "REQ-7001"]
@@ -321,6 +323,7 @@ def test_support_review_hands_off_to_agent_or_decides_left_for_support(
     assert detail["status"] == "decided"
     assert detail["review"]["notes"] == "Confirmed by support."
     assert detail["review"]["reviewed_by"] == "Priya Nair"
+    assert [step["stage"] for step in detail["steps"]].count("completed") == 1
     assert "action_result" not in detail
 
     client.post("/api/requests/REQ-7003/start", headers=AGENT_HEADERS)

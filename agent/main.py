@@ -422,6 +422,35 @@ def after_decide(state: RequestState) -> Literal["approval", "complete"]:
     return "approval"
 
 
+def run_approval_node(state: RequestState) -> dict[str, Any]:
+    """Pause the graph until a support agent signs off on the recommendation."""
+    answer = interrupt(
+        {
+            "request_id": state["request_id"],
+            "recommendation": state["recommendation"],
+        }
+    )
+    return {"review": answer}
+
+
+def run_complete_node(state: RequestState) -> dict[str, Any]:
+    """Record the confirmed resolution and complete the request."""
+    review = state.get("review") or {}
+    payload = {
+        "outcome": review["outcome"],
+        "notes": review.get("notes", ""),
+        "reviewed_by": review["reviewed_by"],
+        "reviewed_at": review.get("reviewed_at") or datetime.now(UTC).isoformat(),
+    }
+    detail = backend_get(f"/api/requests/{state['request_id']}").json()
+    if detail["status"] != "decided":
+        completed = backend_post(
+            f"/api/requests/{state['request_id']}/complete", payload
+        )
+        completed.raise_for_status()
+    return {"review": payload}
+
+
 def build_request_graph(
     request_id: str,
     llm: BaseChatModel | None = None,
@@ -475,38 +504,13 @@ def build_request_graph(
         saved.raise_for_status()
         return {"recommendation": recommendation}
 
-    def approval(state: RequestState) -> dict[str, Any]:
-        """Pause the graph until a support agent signs off on the recommendation."""
-        answer = interrupt(
-            {
-                "request_id": state["request_id"],
-                "recommendation": state["recommendation"],
-            }
-        )
-        return {"review": answer}
-
-    def complete(state: RequestState) -> dict[str, Any]:
-        """Record the confirmed resolution and complete the request."""
-        review = state.get("review") or {}
-        payload = {
-            "outcome": review["outcome"],
-            "notes": review.get("notes", ""),
-            "reviewed_by": review["reviewed_by"],
-            "reviewed_at": review.get("reviewed_at") or datetime.now(UTC).isoformat(),
-        }
-        completed = backend_post(
-            f"/api/requests/{state['request_id']}/complete", payload
-        )
-        completed.raise_for_status()
-        return {"review": payload}
-
     builder = StateGraph(RequestState)
     builder.add_node("screen", screen)
     builder.add_node("agent", agent)
     builder.add_node("tools", ToolNode(tools))
     builder.add_node("decide", decide)
-    builder.add_node("approval", approval)
-    builder.add_node("complete", complete)
+    builder.add_node("approval", run_approval_node)
+    builder.add_node("complete", run_complete_node)
 
     builder.add_edge(START, "screen")
     builder.add_conditional_edges(
@@ -568,8 +572,10 @@ def resume_request_thread(
         "reviewed_by": review["reviewed_by"],
         "reviewed_at": review.get("reviewed_at") or datetime.now(UTC).isoformat(),
     }
-    completed = backend_post(f"/api/requests/{request_id}/complete", payload)
-    completed.raise_for_status()
+    detail = backend_get(f"/api/requests/{request_id}").json()
+    if detail["status"] != "decided":
+        completed = backend_post(f"/api/requests/{request_id}/complete", payload)
+        completed.raise_for_status()
     return {**(state.values or {}), "review": payload}
 
 
@@ -583,8 +589,6 @@ def resume_request(request_id: str, llm: BaseChatModel | None = None) -> dict[st
     review = detail.get("review")
     if review is None:
         raise ValueError(f"Request {request_id} has no review to resume")
-    if detail["status"] == "decided":
-        return {"request_id": request_id, "status": "decided", "review": review}
     attempt = int(detail["attempts"]) + 1
     thread_id = f"request-{request_id}-attempt-{attempt}"
     result = resume_request_thread(request_id, thread_id, review, llm)

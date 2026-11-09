@@ -86,10 +86,10 @@ Expose the agent-only OpenAPI document, enforce the refund cap before state chec
 
 ### Success criteria
 
-- [ ] API tests verify `GET /api/agent/openapi.json` returns exactly the 8 agent operations (`get_request_context`, `list_policy_sections`, `read_policy_section`, `calculate_refund`, `add_request_step`, `start_request`, `save_recommendation`, `complete_request`), has no `servers` key, and has no key parameter on any operation.
-- [ ] API tests verify `POST /api/requests/REQ-7001/refund` with an amount over `₹10,000.00` is refused with `403` naming the `₹10,000.00` limit even when `REQ-7001` is still `waiting` and was never started or approved.
-- [ ] API and agent tests verify signing off on a held request via `POST /api/requests/{request_id}/review` immediately moves the request to `decided` once without calling `agent/service.py`, and resuming the paused agent thread afterwards makes no completion or refund call.
-- [ ] `npm run check:python` passes with at least 80% coverage.
+- [x] API tests verify `GET /api/agent/openapi.json` returns exactly the 8 agent operations (`get_request_context`, `list_policy_sections`, `read_policy_section`, `calculate_refund`, `add_request_step`, `start_request`, `save_recommendation`, `complete_request`), has no `servers` key, and has no key parameter on any operation.
+- [x] API tests verify `POST /api/requests/REQ-7001/refund` with an amount over `₹10,000.00` is refused with `403` naming the `₹10,000.00` limit even when `REQ-7001` is still `waiting` and was never started or approved.
+- [x] API and agent tests verify signing off on a held request via `POST /api/requests/{request_id}/review` immediately moves the request to `decided` once without calling `agent/service.py`, and resuming the paused agent thread afterwards makes no completion or refund call.
+- [x] `npm run check:python` passes with at least 80% coverage.
 
 ---
 

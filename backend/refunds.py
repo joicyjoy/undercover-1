@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 FREE_DELIVERY_THRESHOLD = 499.0
 STANDARD_DELIVERY_FEE = 49.0
 RETURN_PICKUP_FEE = 75.0
+MAX_REFUND_LIMIT = 10000.0
 
 RefundReason = Literal[
     "cancellation",
@@ -67,6 +68,17 @@ def find_order_item(order: dict[str, Any], identifier: str) -> dict[str, Any]:
         if identifier in {item.get("item_id"), item.get("sku")}:
             return item
     raise ValueError(f"Unknown order item: {identifier}")
+
+
+def requested_refund_total(order: dict[str, Any], lines: list[Line]) -> float:
+    """Return the raw requested item total before capping at ordered quantities."""
+    return round(
+        sum(
+            float(find_order_item(order, line.item_id)["unit_price"]) * line.quantity
+            for line in lines
+        ),
+        2,
+    )
 
 
 def covered_quantities(

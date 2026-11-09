@@ -60,9 +60,12 @@ def resume_in_progress(
     resumed_todos: dict[str, dict[str, str]] = {}
     items = main.backend_get("/api/requests").json()
     for item in items:
+        request_id = item["request_id"]
+        if item["status"] == "decided" and item.get("review") is not None:
+            main.resume_request(request_id, request_model() if request_model else None)
+            continue
         if item["status"] != "in_progress":
             continue
-        request_id = item["request_id"]
         llm = request_model() if request_model else None
         if item.get("review") is not None:
             main.resume_request(request_id, llm)

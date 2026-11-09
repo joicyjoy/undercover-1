@@ -9,14 +9,22 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 from agent.instructions import QUEUE_INSTRUCTIONS, REQUEST_INSTRUCTIONS
 from agent.models import Recommendation
 from agent.queue import run_queue
 from backend.policies import list_policies, read_section
-from backend.refunds import RefundCalculation, RefundInput, work_out_refund
+from backend.refunds import (
+    MAX_REFUND_LIMIT,
+    RefundCalculation,
+    RefundInput,
+    requested_refund_total,
+    work_out_refund,
+)
 from backend.store import AGENT_STAGES, Store, TodoStatus
 
 DEFAULT_DATABASE_PATH = (
@@ -24,6 +32,16 @@ DEFAULT_DATABASE_PATH = (
 )
 DASHBOARD_DIST = Path(__file__).resolve().parent.parent / "dashboard" / "dist"
 DEFAULT_AGENT_URL = "http://127.0.0.1:8002"
+AGENT_OPERATION_IDS = {
+    "get_request_context",
+    "list_policy_sections",
+    "read_policy_section",
+    "calculate_refund",
+    "add_request_step",
+    "start_request",
+    "save_recommendation",
+    "complete_request",
+}
 
 
 def database_path() -> Path:
@@ -273,6 +291,23 @@ def get_agent_instructions() -> dict[str, str]:
     return {"queue": QUEUE_INSTRUCTIONS, "request": REQUEST_INSTRUCTIONS}
 
 
+@app.get(
+    "/api/agent/openapi.json",
+    operation_id="get_agent_openapi",
+    dependencies=[Depends(require_shared_read)],
+)
+def get_agent_openapi() -> dict[str, Any]:
+    """Return the OpenAPI schema containing only the request agent's operations."""
+    routes = [
+        route
+        for route in app.routes
+        if isinstance(route, APIRoute) and route.operation_id in AGENT_OPERATION_IDS
+    ]
+    schema = get_openapi(title=app.title, version=app.version, routes=routes)
+    schema.pop("servers", None)
+    return schema
+
+
 @app.post(
     "/api/requests/{request_id}/steps",
     operation_id="add_request_step",
@@ -300,12 +335,18 @@ def calculate_refund(
     """Calculate the policy-backed refund for a request in progress."""
     store = store_of(request)
     record = require_request(store, request_id)
-    if not store.is_in_progress(request_id):
-        raise HTTPException(status_code=409, detail="Request is not in progress")
     try:
+        requested = requested_refund_total(record["order"], refund.lines)
         result = work_out_refund(record["order"], refund.reason, refund.lines)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    if max(requested, result["refund"]) > MAX_REFUND_LIMIT:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Refund exceeds the ₹{MAX_REFUND_LIMIT:,.2f} approval limit",
+        )
+    if not store.is_in_progress(request_id):
+        raise HTTPException(status_code=409, detail="Request is not in progress")
     store.add_step(
         request_id,
         "calculated_refund",
@@ -386,7 +427,7 @@ def review_request(
     status = store.record_review(request_id, saved_review)
     if status is None:
         raise HTTPException(status_code=409, detail="Request was already reviewed")
-    if status == "in_progress":
+    if result.get("recommendation") is not None:
         background_tasks.add_task(notify_agent_resume, request_id)
     return {"request_id": request_id, "status": status, "review": saved_review}
 

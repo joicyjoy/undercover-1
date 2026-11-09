@@ -169,3 +169,16 @@ def test_refund_endpoint_guards_missing_idle_and_unknown_items(client):
     assert idle.status_code == 409
     assert unknown_item.status_code == 422
     assert "Unknown order item: ITM-NOPE" in unknown_item.json()["detail"]
+
+
+def test_refund_over_limit_is_refused_with_403_before_checking_in_progress(client):
+    over_limit = client.post(
+        "/api/requests/REQ-7001/refund",
+        json={
+            "reason": "cancellation",
+            "lines": [{"item_id": "ITM-10001-1", "quantity": 50}],
+        },
+    )
+    assert over_limit.status_code == 403
+    assert "₹10,000.00" in over_limit.json()["detail"]
+    assert client.get("/api/requests/REQ-7001").json()["status"] == "waiting"

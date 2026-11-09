@@ -210,3 +210,40 @@ def test_agent_api_key_protects_agent_routes_and_never_stands_in_for_handler(
         TestClient(agent_service.app),
     ):
         pass
+
+
+def test_agent_openapi_exposes_only_agent_operations_without_servers_or_key_inputs(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(tmp_path / "openapi.sqlite3"))
+    with TestClient(app) as client:
+        response = client.get("/api/agent/openapi.json")
+
+    assert response.status_code == 200
+    schema = response.json()
+    assert "servers" not in schema
+    operation_ids = {
+        operation["operationId"]
+        for path_item in schema["paths"].values()
+        for operation in path_item.values()
+        if isinstance(operation, dict) and "operationId" in operation
+    }
+    assert operation_ids == {
+        "get_request_context",
+        "list_policy_sections",
+        "read_policy_section",
+        "calculate_refund",
+        "add_request_step",
+        "start_request",
+        "save_recommendation",
+        "complete_request",
+    }
+    parameters = [
+        param["name"]
+        for path_item in schema["paths"].values()
+        for operation in path_item.values()
+        if isinstance(operation, dict)
+        for param in operation.get("parameters", [])
+    ]
+    assert "X-API-Key" not in parameters
+    assert "x-api-key" not in {name.lower() for name in parameters}

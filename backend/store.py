@@ -527,13 +527,12 @@ class Store:
             if row["queue_status"] != "waiting_for_agent_review":
                 return None
             has_recommendation = row["recommendation_json"] is not None
-            next_status = "in_progress" if has_recommendation else "decided"
             connection.execute(
                 update(support_requests)
                 .where(support_requests.c.request_id == request_id)
                 .values(
                     review_json=json.dumps(review),
-                    queue_status=next_status,
+                    queue_status="decided",
                 )
             )
             self._insert_step(
@@ -542,7 +541,17 @@ class Store:
                 "signed_off",
                 f"Signed off ({review['outcome']}) by {review['reviewed_by']}.",
             )
-        return next_status
+            if has_recommendation:
+                self._insert_step(
+                    connection,
+                    request_id,
+                    "completed",
+                    (
+                        f"Confirmed resolution ({review['outcome']}) after review by "
+                        f"{review['reviewed_by']}."
+                    ),
+                )
+        return "decided"
 
     def complete_request(self, request_id: str, review: dict[str, Any]) -> bool:
         """Record the confirmed resolution once and mark the request decided."""

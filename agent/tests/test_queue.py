@@ -190,7 +190,7 @@ def test_run_finishes_signed_off_and_stopped_requests_when_agent_was_unreachable
         },
     )
     assert signed_off.status_code == 200
-    assert store.get_request("REQ-7008")["status"] == "in_progress"
+    assert store.get_request("REQ-7008")["status"] == "decided"
 
     store.start_request("REQ-7002")
     assert store.get_request("REQ-7002")["status"] == "in_progress"
@@ -207,6 +207,9 @@ def test_run_finishes_signed_off_and_stopped_requests_when_agent_was_unreachable
     assert "Finished REQ-7008" in summary
     queue = statuses(store)
     assert queue["REQ-7008"] == "decided"
+    assert [step["stage"] for step in store.get_request("REQ-7008")["steps"]].count(
+        "completed"
+    ) == 1
     assert queue["REQ-7002"] == "waiting_for_agent_review"
     assert queue["REQ-7007"] == "waiting_for_agent_review"
     assert todo_statuses(store) == {"REQ-7002": "done", "REQ-7007": "done"}
