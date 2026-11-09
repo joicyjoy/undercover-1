@@ -103,15 +103,15 @@ Build the context layer FastMCP service:
 
 ### Success criteria
 
-- [ ] Unit tests against real `context/` files verify `lookup_term` (case-insensitive and unknown term listing), `describe_fields`, `get_plan`, `get_claim_rules`, `search_reference_data` (multi-word match), `search_documents`, and `read_section` (valid and invalid sections).
-- [ ] Unit tests verify all context tool responses include `sources` metadata (`file`, `system`, `owner`, `reviewed`) and no section includes markdown front matter.
-- [ ] Unit tests verify all 7 context tools have one-line descriptions, required inputs, and read-only annotations.
-- [ ] Lambda handler test verifies calling `context.server.handler` twice in one process with Function URL events succeeds (listing tools and calling a tool).
-- [ ] `npm run check:context` passes in isolation with only the `context` dependency group installed.
-- [ ] Local server test verifies `uv run -m context` answers `tools/list` on `http://127.0.0.1:8006/mcp`.
-- [ ] Seeding test verifies plans and document versions are loaded from `context/` into the database.
-- [ ] API test verifies `/api/agent/openapi.json` contains exactly 6 operations.
-- [ ] `npm run check:python` passes with at least 80% coverage.
+- [x] Unit tests against real `context/` files verify `lookup_term` (case-insensitive and unknown term listing), `describe_fields`, `get_plan`, `get_claim_rules`, `search_reference_data` (multi-word match), `search_documents`, and `read_section` (valid and invalid sections).
+- [x] Unit tests verify all context tool responses include `sources` metadata (`file`, `system`, `owner`, `reviewed`) and no section includes markdown front matter.
+- [x] Unit tests verify all 7 context tools have one-line descriptions, required inputs, and read-only annotations.
+- [x] Lambda handler test verifies calling `context.server.handler` twice in one process with Function URL events succeeds (listing tools and calling a tool).
+- [x] `npm run check:context` passes in isolation with only the `context` dependency group installed.
+- [x] Local server test verifies `uv run -m context` answers `tools/list` on `http://127.0.0.1:8006/mcp`.
+- [x] Seeding test verifies plans and document versions are loaded from `context/` into the database.
+- [x] API test verifies `/api/agent/openapi.json` contains exactly 6 operations.
+- [x] `npm run check:python` passes with at least 80% coverage.
 
 ---
 

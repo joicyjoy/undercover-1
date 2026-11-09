@@ -34,8 +34,6 @@ DASHBOARD_DIST = Path(__file__).resolve().parent.parent / "dashboard" / "dist"
 DEFAULT_AGENT_URL = "http://127.0.0.1:8002"
 AGENT_OPERATION_IDS = {
     "get_request_context",
-    "list_policy_sections",
-    "read_policy_section",
     "calculate_refund",
     "add_request_step",
     "start_request",

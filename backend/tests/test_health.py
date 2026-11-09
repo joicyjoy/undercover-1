@@ -299,8 +299,6 @@ def test_agent_openapi_exposes_only_agent_operations_without_servers_or_key_inpu
     }
     assert operation_ids == {
         "get_request_context",
-        "list_policy_sections",
-        "read_policy_section",
         "calculate_refund",
         "add_request_step",
         "start_request",

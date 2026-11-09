@@ -3149,6 +3149,7 @@ dependencies = [
     { name = "langfuse" },
     { name = "langgraph-checkpoint-postgres" },
     { name = "mangum" },
+    { name = "mcp" },
     { name = "nbformat" },
     { name = "ollama" },
     { name = "openai" },
@@ -3157,6 +3158,7 @@ dependencies = [
     { name = "plotly" },
     { name = "psycopg", extra = ["binary"] },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
     { name = "requests" },
     { name = "sqlalchemy" },
     { name = "tqdm" },
@@ -3164,6 +3166,11 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+context = [
+    { name = "mangum" },
+    { name = "mcp" },
+    { name = "pyyaml" },
+]
 dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -3183,6 +3190,7 @@ server = [
     { name = "openrouter" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "pyyaml" },
     { name = "sqlalchemy" },
     { name = "uvicorn" },
 ]
@@ -3204,6 +3212,7 @@ requires-dist = [
     { name = "langfuse", specifier = ">=4.16.0" },
     { name = "langgraph-checkpoint-postgres", specifier = ">=3.1.2" },
     { name = "mangum", specifier = ">=0.22.0" },
+    { name = "mcp", specifier = ">=1.30.0" },
     { name = "nbformat", specifier = ">=5.11.1" },
     { name = "ollama", specifier = ">=0.6.2" },
     { name = "openai", specifier = ">=3.19.2" },
@@ -3212,6 +3221,7 @@ requires-dist = [
     { name = "plotly", specifier = ">=7.1.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "sqlalchemy", specifier = ">=2.1.3" },
     { name = "tqdm", specifier = ">=4.70.1" },
@@ -3219,6 +3229,11 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+context = [
+    { name = "mangum", specifier = ">=0.22.0" },
+    { name = "mcp", specifier = ">=1.30.0" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+]
 dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
@@ -3238,6 +3253,7 @@ server = [
     { name = "openrouter", specifier = ">=1.2.1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "sqlalchemy", specifier = ">=2.1.3" },
     { name = "uvicorn", specifier = ">=0.54.0" },
 ]
