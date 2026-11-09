@@ -5,12 +5,15 @@ from backend import main
 from backend.main import app
 from backend.refunds import Line, work_out_refund
 
+TEST_API_KEY = "test-agent-secret-key-0123456789abcdef"
+
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(tmp_path / "refunds.sqlite3"))
+    monkeypatch.setenv("UNDERCOVER_API_KEY", TEST_API_KEY)
     monkeypatch.setattr(main, "run_in_background", lambda *args: None)
-    with TestClient(app) as test_client:
+    with TestClient(app, headers={"X-API-Key": TEST_API_KEY}) as test_client:
         yield test_client
 
 

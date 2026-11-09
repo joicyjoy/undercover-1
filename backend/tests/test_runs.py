@@ -21,6 +21,10 @@ RECOMMENDATION = {
 }
 
 
+TEST_API_KEY = "test-agent-secret-key-0123456789abcdef"
+AGENT_HEADERS = {"X-API-Key": TEST_API_KEY}
+
+
 @pytest.fixture
 def store(tmp_path):
     result = Store(tmp_path / "runs.sqlite3")
@@ -31,6 +35,7 @@ def store(tmp_path):
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(tmp_path / "api.sqlite3"))
+    monkeypatch.setenv("UNDERCOVER_API_KEY", TEST_API_KEY)
     monkeypatch.setattr(main, "run_in_background", lambda *args: None)
     with TestClient(app) as test_client:
         yield test_client
@@ -150,10 +155,18 @@ def test_runs_are_one_at_a_time_and_keep_a_to_do_list(client):
         {"request_id": "REQ-7001", "title": "Cancellation", "status": "to_do"},
         {"request_id": "REQ-7002", "title": "Return", "status": "to_do"},
     ]
-    written = client.put(f"/api/runs/{run_id}/todos", json={"todos": todos})
-    ticked = client.post(f"/api/runs/{run_id}/todos/REQ-7002", json={"status": "done"})
+    written = client.put(
+        f"/api/runs/{run_id}/todos", json={"todos": todos}, headers=AGENT_HEADERS
+    )
+    ticked = client.post(
+        f"/api/runs/{run_id}/todos/REQ-7002",
+        json={"status": "done"},
+        headers=AGENT_HEADERS,
+    )
     added = client.post(
-        f"/api/runs/{run_id}/todos/REQ-7003", json={"status": "left_for_support"}
+        f"/api/runs/{run_id}/todos/REQ-7003",
+        json={"status": "left_for_support"},
+        headers=AGENT_HEADERS,
     )
     current = client.get("/api/runs/current").json()
 
@@ -175,8 +188,14 @@ def test_runs_are_one_at_a_time_and_keep_a_to_do_list(client):
 def test_to_do_list_is_refused_once_a_run_has_finished(client):
     run_id = client.post("/api/runs", json={"cap": 1}).json()["run_id"]
     app.state.store.finish_run(run_id, "finished", "Done.")
-    written = client.put(f"/api/runs/{run_id}/todos", json={"todos": []})
-    ticked = client.post(f"/api/runs/{run_id}/todos/REQ-7001", json={"status": "done"})
+    written = client.put(
+        f"/api/runs/{run_id}/todos", json={"todos": []}, headers=AGENT_HEADERS
+    )
+    ticked = client.post(
+        f"/api/runs/{run_id}/todos/REQ-7001",
+        json={"status": "done"},
+        headers=AGENT_HEADERS,
+    )
     assert written.status_code == 409
     assert ticked.status_code == 409
     assert client.post("/api/runs", json={"cap": 1}).status_code == 200
@@ -188,28 +207,35 @@ def test_a_run_needs_a_cap_of_at_least_one(client):
 
 
 def test_waiting_requests_hold_no_customer_or_order_fields(client):
-    client.post("/api/requests/REQ-7001/start")
-    waiting = client.get("/api/requests/waiting").json()
+    client.post("/api/requests/REQ-7001/start", headers=AGENT_HEADERS)
+    waiting = client.get("/api/requests/waiting", headers=AGENT_HEADERS).json()
     assert len(waiting) == 7
     assert "REQ-7001" not in {item["request_id"] for item in waiting}
     assert set(waiting[0]) == {"request_id", "type", "created_at"}
 
 
 def test_agent_operations_start_save_and_fail_requests(client):
-    started = client.post("/api/requests/REQ-7001/start")
-    again = client.post("/api/requests/REQ-7001/start")
-    missing = client.post("/api/requests/REQ-0000/start")
-    saved = client.post("/api/requests/REQ-7001/recommendation", json=RECOMMENDATION)
+    started = client.post("/api/requests/REQ-7001/start", headers=AGENT_HEADERS)
+    again = client.post("/api/requests/REQ-7001/start", headers=AGENT_HEADERS)
+    missing = client.post("/api/requests/REQ-0000/start", headers=AGENT_HEADERS)
+    saved = client.post(
+        "/api/requests/REQ-7001/recommendation",
+        json=RECOMMENDATION,
+        headers=AGENT_HEADERS,
+    )
     duplicate = client.post(
-        "/api/requests/REQ-7001/recommendation", json=RECOMMENDATION
+        "/api/requests/REQ-7001/recommendation",
+        json=RECOMMENDATION,
+        headers=AGENT_HEADERS,
     )
     conflicting = client.post(
         "/api/requests/REQ-7001/recommendation",
         json={**RECOMMENDATION, "outcome": "decline"},
+        headers=AGENT_HEADERS,
     )
-    client.post("/api/requests/REQ-7002/start")
-    failed = client.post("/api/requests/REQ-7002/failure")
-    not_running = client.post("/api/requests/REQ-7003/failure")
+    client.post("/api/requests/REQ-7002/start", headers=AGENT_HEADERS)
+    failed = client.post("/api/requests/REQ-7002/failure", headers=AGENT_HEADERS)
+    not_running = client.post("/api/requests/REQ-7003/failure", headers=AGENT_HEADERS)
 
     assert started.json() == {
         "request_id": "REQ-7001",
@@ -226,13 +252,21 @@ def test_agent_operations_start_save_and_fail_requests(client):
 
 
 def test_agent_progress_steps_need_a_request_in_progress(client):
-    invalid = client.post("/api/requests/REQ-7001/steps", json={"stage": "finished"})
-    idle = client.post(
-        "/api/requests/REQ-7001/steps", json={"stage": "checking_policy"}
+    invalid = client.post(
+        "/api/requests/REQ-7001/steps",
+        json={"stage": "finished"},
+        headers=AGENT_HEADERS,
     )
-    client.post("/api/requests/REQ-7001/start")
+    idle = client.post(
+        "/api/requests/REQ-7001/steps",
+        json={"stage": "checking_policy"},
+        headers=AGENT_HEADERS,
+    )
+    client.post("/api/requests/REQ-7001/start", headers=AGENT_HEADERS)
     recorded = client.post(
-        "/api/requests/REQ-7001/steps", json={"stage": "checking_policy"}
+        "/api/requests/REQ-7001/steps",
+        json={"stage": "checking_policy"},
+        headers=AGENT_HEADERS,
     )
     assert invalid.status_code == 422
     assert idle.status_code == 409
@@ -245,12 +279,16 @@ def test_support_review_hands_off_to_agent_or_decides_left_for_support(
     resumed: list[str] = []
     monkeypatch.setattr(main, "notify_agent_resume", resumed.append)
 
-    client.post("/api/requests/REQ-7001/start")
+    client.post("/api/requests/REQ-7001/start", headers=AGENT_HEADERS)
     early = client.post(
         "/api/requests/REQ-7002/review",
         json={"outcome": "approve", "notes": "", "reviewed_by": "Priya Nair"},
     )
-    client.post("/api/requests/REQ-7001/recommendation", json=RECOMMENDATION)
+    client.post(
+        "/api/requests/REQ-7001/recommendation",
+        json=RECOMMENDATION,
+        headers=AGENT_HEADERS,
+    )
     review_payload = {
         "outcome": "approve",
         "notes": "Confirmed by support.",
@@ -269,6 +307,7 @@ def test_support_review_hands_off_to_agent_or_decides_left_for_support(
             **review_payload,
             "reviewed_at": signed_off["review"]["reviewed_at"],
         },
+        headers=AGENT_HEADERS,
     )
     detail = client.get("/api/requests/REQ-7001").json()
 
@@ -284,10 +323,10 @@ def test_support_review_hands_off_to_agent_or_decides_left_for_support(
     assert detail["review"]["reviewed_by"] == "Priya Nair"
     assert "action_result" not in detail
 
-    client.post("/api/requests/REQ-7003/start")
-    client.post("/api/requests/REQ-7003/failure")
-    client.post("/api/requests/REQ-7003/start")
-    client.post("/api/requests/REQ-7003/failure")
+    client.post("/api/requests/REQ-7003/start", headers=AGENT_HEADERS)
+    client.post("/api/requests/REQ-7003/failure", headers=AGENT_HEADERS)
+    client.post("/api/requests/REQ-7003/start", headers=AGENT_HEADERS)
+    client.post("/api/requests/REQ-7003/failure", headers=AGENT_HEADERS)
     left_review = client.post(
         "/api/requests/REQ-7003/review",
         json={"outcome": "decline", "notes": "Manual decision.", "reviewed_by": "Dev"},

@@ -81,6 +81,12 @@ def backend() -> httpx.Client:
     return httpx.Client(base_url=backend_url(), timeout=30)
 
 
+def agent_headers() -> dict[str, str]:
+    """Return the X-API-Key header when UNDERCOVER_API_KEY is set."""
+    key = os.getenv("UNDERCOVER_API_KEY")
+    return {"X-API-Key": key} if key else {}
+
+
 def model() -> ChatOpenAI:
     """Return the model named in MODEL_NAME, or DeepSeek V4.1 Flash by default."""
     name = os.getenv("MODEL_NAME")
@@ -184,7 +190,7 @@ def backend_get(path: str) -> httpx.Response:
 
     def _send() -> httpx.Response:
         with backend() as client:
-            return client.get(path)
+            return client.get(path, headers=agent_headers())
 
     return call_with_retry(_send, retry_on=(httpx.TransportError,))
 
@@ -194,7 +200,17 @@ def backend_post(path: str, payload: dict[str, Any] | None = None) -> httpx.Resp
 
     def _send() -> httpx.Response:
         with backend() as client:
-            return client.post(path, json=payload)
+            return client.post(path, json=payload, headers=agent_headers())
+
+    return call_with_retry(_send, retry_on=(httpx.TransportError,))
+
+
+def backend_put(path: str, payload: dict[str, Any]) -> httpx.Response:
+    """Send a PUT request to the backend with transport retry."""
+
+    def _send() -> httpx.Response:
+        with backend() as client:
+            return client.put(path, json=payload, headers=agent_headers())
 
     return call_with_retry(_send, retry_on=(httpx.TransportError,))
 

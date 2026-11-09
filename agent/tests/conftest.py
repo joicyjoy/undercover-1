@@ -12,6 +12,7 @@ from backend.store import Store
 def api(tmp_path, monkeypatch):
     """Run the backend on a fresh database and point the agent at it."""
     monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(tmp_path / "agent.sqlite3"))
+    monkeypatch.setenv("UNDERCOVER_API_KEY", "test-agent-secret-key-0123456789abcdef")
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
     with TestClient(app) as client:

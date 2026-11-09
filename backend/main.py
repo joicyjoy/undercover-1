@@ -1,13 +1,14 @@
 """The Shoppie support backend."""
 
 import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -125,6 +126,36 @@ def store_of(request: Request) -> Store:
     return request.app.state.store
 
 
+def has_valid_agent_key(request: Request) -> bool:
+    """Return whether the request carries the configured UNDERCOVER_API_KEY."""
+    expected = os.getenv("UNDERCOVER_API_KEY")
+    supplied = request.headers.get("X-API-Key")
+    if not expected or not supplied:
+        return False
+    return secrets.compare_digest(supplied, expected)
+
+
+def require_agent_key(request: Request) -> None:
+    """Refuse requests that do not carry the valid agent X-API-Key."""
+    if not has_valid_agent_key(request):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+def require_shared_read(request: Request) -> None:
+    """Allow dashboard reads or valid agent X-API-Key reads."""
+    if "X-API-Key" in request.headers:
+        require_agent_key(request)
+
+
+def require_support_handler(request: Request) -> None:
+    """Refuse support handler actions authenticated only with the agent X-API-Key."""
+    if "X-API-Key" in request.headers:
+        raise HTTPException(
+            status_code=401,
+            detail="Agent API key cannot stand in for a support handler",
+        )
+
+
 def require_request(store: Store, request_id: str) -> dict[str, Any]:
     """Return a request or raise 404."""
     result = store.get_request(request_id)
@@ -162,31 +193,51 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/api/requests", operation_id="list_requests")
+@app.get(
+    "/api/requests",
+    operation_id="list_requests",
+    dependencies=[Depends(require_shared_read)],
+)
 def list_requests(request: Request) -> list[dict[str, Any]]:
     """List support requests in queue order."""
     return store_of(request).list_requests()
 
 
-@app.get("/api/requests/waiting", operation_id="list_waiting_requests")
+@app.get(
+    "/api/requests/waiting",
+    operation_id="list_waiting_requests",
+    dependencies=[Depends(require_agent_key)],
+)
 def list_waiting_requests(request: Request) -> list[dict[str, str]]:
     """List the id, type and creation time of each waiting request."""
     return store_of(request).list_waiting()
 
 
-@app.get("/api/requests/{request_id}", operation_id="get_request")
+@app.get(
+    "/api/requests/{request_id}",
+    operation_id="get_request",
+    dependencies=[Depends(require_shared_read)],
+)
 def get_request(request_id: str, request: Request) -> dict[str, Any]:
     """Return a support request and its related records."""
     return require_request(store_of(request), request_id)
 
 
-@app.get("/api/requests/{request_id}/context", operation_id="get_request_context")
+@app.get(
+    "/api/requests/{request_id}/context",
+    operation_id="get_request_context",
+    dependencies=[Depends(require_agent_key)],
+)
 def get_request_context(request_id: str, request: Request) -> dict[str, Any]:
     """Return the request, customer and order context available to the agent."""
     return require_request(store_of(request), request_id)
 
 
-@app.get("/api/policies", operation_id="list_policy_sections")
+@app.get(
+    "/api/policies",
+    operation_id="list_policy_sections",
+    dependencies=[Depends(require_agent_key)],
+)
 def list_policy_sections() -> list[dict[str, object]]:
     """List Shoppie's policies and the sections in each."""
     return list_policies()
@@ -195,6 +246,7 @@ def list_policy_sections() -> list[dict[str, object]]:
 @app.get(
     "/api/requests/{request_id}/policies/{policy}/sections/{section}",
     operation_id="read_policy_section",
+    dependencies=[Depends(require_agent_key)],
 )
 def read_policy_section(
     request_id: str, policy: str, section: str, request: Request
@@ -211,13 +263,21 @@ def read_policy_section(
     return result
 
 
-@app.get("/api/agent/instructions", operation_id="get_agent_instructions")
+@app.get(
+    "/api/agent/instructions",
+    operation_id="get_agent_instructions",
+    dependencies=[Depends(require_shared_read)],
+)
 def get_agent_instructions() -> dict[str, str]:
     """Return the read-only instructions for running the queue and working a request."""
     return {"queue": QUEUE_INSTRUCTIONS, "request": REQUEST_INSTRUCTIONS}
 
 
-@app.post("/api/requests/{request_id}/steps", operation_id="add_request_step")
+@app.post(
+    "/api/requests/{request_id}/steps",
+    operation_id="add_request_step",
+    dependencies=[Depends(require_agent_key)],
+)
 def add_request_step(
     request_id: str, progress: ProgressInput, request: Request
 ) -> dict[str, str]:
@@ -229,7 +289,11 @@ def add_request_step(
     return {"status": "recorded", "stage": progress.stage}
 
 
-@app.post("/api/requests/{request_id}/refund", operation_id="calculate_refund")
+@app.post(
+    "/api/requests/{request_id}/refund",
+    operation_id="calculate_refund",
+    dependencies=[Depends(require_agent_key)],
+)
 def calculate_refund(
     request_id: str, refund: RefundInput, request: Request
 ) -> RefundCalculation:
@@ -250,7 +314,11 @@ def calculate_refund(
     return result
 
 
-@app.post("/api/requests/{request_id}/start", operation_id="start_request")
+@app.post(
+    "/api/requests/{request_id}/start",
+    operation_id="start_request",
+    dependencies=[Depends(require_agent_key)],
+)
 def start_request(request_id: str, request: Request) -> dict[str, Any]:
     """Move a waiting request into progress for the agent."""
     store = store_of(request)
@@ -262,7 +330,9 @@ def start_request(request_id: str, request: Request) -> dict[str, Any]:
 
 
 @app.post(
-    "/api/requests/{request_id}/recommendation", operation_id="save_recommendation"
+    "/api/requests/{request_id}/recommendation",
+    operation_id="save_recommendation",
+    dependencies=[Depends(require_agent_key)],
 )
 def save_recommendation(
     request_id: str, recommendation: Recommendation, request: Request
@@ -275,7 +345,11 @@ def save_recommendation(
     return {"request_id": request_id, "status": "waiting_for_agent_review"}
 
 
-@app.post("/api/requests/{request_id}/failure", operation_id="record_failure")
+@app.post(
+    "/api/requests/{request_id}/failure",
+    operation_id="record_failure",
+    dependencies=[Depends(require_agent_key)],
+)
 def record_failure(request_id: str, request: Request) -> dict[str, str]:
     """Count a failed attempt and return the request to the queue or to support."""
     store = store_of(request)
@@ -286,7 +360,11 @@ def record_failure(request_id: str, request: Request) -> dict[str, str]:
     return {"request_id": request_id, "status": result}
 
 
-@app.post("/api/requests/{request_id}/review", operation_id="review_request")
+@app.post(
+    "/api/requests/{request_id}/review",
+    operation_id="review_request",
+    dependencies=[Depends(require_support_handler)],
+)
 def review_request(
     request_id: str,
     review: ReviewInput,
@@ -313,7 +391,11 @@ def review_request(
     return {"request_id": request_id, "status": status, "review": saved_review}
 
 
-@app.post("/api/requests/{request_id}/complete", operation_id="complete_request")
+@app.post(
+    "/api/requests/{request_id}/complete",
+    operation_id="complete_request",
+    dependencies=[Depends(require_agent_key)],
+)
 def complete_request(
     request_id: str, completion: CompletionInput, request: Request
 ) -> dict[str, Any]:
@@ -326,7 +408,11 @@ def complete_request(
     return {"request_id": request_id, "status": "decided", "review": payload}
 
 
-@app.post("/api/runs", operation_id="start_run")
+@app.post(
+    "/api/runs",
+    operation_id="start_run",
+    dependencies=[Depends(require_support_handler)],
+)
 def start_run(
     run: RunInput, request: Request, background_tasks: BackgroundTasks
 ) -> dict[str, Any]:
@@ -339,13 +425,21 @@ def start_run(
     return {"run_id": run_id, "cap": run.cap, "status": "running"}
 
 
-@app.get("/api/runs/current", operation_id="get_current_run")
+@app.get(
+    "/api/runs/current",
+    operation_id="get_current_run",
+    dependencies=[Depends(require_shared_read)],
+)
 def get_current_run(request: Request) -> dict[str, Any] | None:
     """Return the latest run with its to-do list."""
     return store_of(request).current_run()
 
 
-@app.put("/api/runs/{run_id}/todos", operation_id="write_run_todos")
+@app.put(
+    "/api/runs/{run_id}/todos",
+    operation_id="write_run_todos",
+    dependencies=[Depends(require_agent_key)],
+)
 def write_run_todos(run_id: str, todos: TodoList, request: Request) -> dict[str, str]:
     """Replace a running run's to-do list."""
     store = store_of(request)
@@ -355,7 +449,11 @@ def write_run_todos(run_id: str, todos: TodoList, request: Request) -> dict[str,
     return {"run_id": run_id, "status": "recorded"}
 
 
-@app.post("/api/runs/{run_id}/todos/{request_id}", operation_id="update_run_todo")
+@app.post(
+    "/api/runs/{run_id}/todos/{request_id}",
+    operation_id="update_run_todo",
+    dependencies=[Depends(require_agent_key)],
+)
 def update_run_todo(
     run_id: str, request_id: str, update: TodoStatusInput, request: Request
 ) -> dict[str, str]:

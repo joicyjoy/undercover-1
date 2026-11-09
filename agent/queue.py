@@ -58,8 +58,7 @@ def resume_in_progress(
 ) -> dict[str, dict[str, str]]:
     """Finish signed-off requests and resume mid-flight requests before new work."""
     resumed_todos: dict[str, dict[str, str]] = {}
-    with main.backend() as client:
-        items = client.get("/api/requests").json()
+    items = main.backend_get("/api/requests").json()
     for item in items:
         if item["status"] != "in_progress":
             continue
@@ -79,11 +78,10 @@ def resume_in_progress(
             "status": todo_status,
         }
         resumed_todos[request_id] = todo
-        with main.backend() as client:
-            client.post(
-                f"/api/runs/{run_id}/todos/{request_id}",
-                json={"status": todo_status},
-            ).raise_for_status()
+        main.backend_post(
+            f"/api/runs/{run_id}/todos/{request_id}",
+            {"status": todo_status},
+        ).raise_for_status()
     return resumed_todos
 
 
@@ -99,8 +97,7 @@ def run_queue(
     resumed_todos = resume_in_progress(run_id, cap, worked, request_model)
 
     def waiting_ids() -> list[str]:
-        with main.backend() as client:
-            response = client.get("/api/requests/waiting")
+        response = main.backend_get("/api/requests/waiting")
         response.raise_for_status()
         return [item["request_id"] for item in response.json()]
 
@@ -112,16 +109,14 @@ def run_queue(
         ]
 
     def set_todo(request_id: str, status: str) -> None:
-        with main.backend() as client:
-            client.post(
-                f"/api/runs/{run_id}/todos/{request_id}", json={"status": status}
-            ).raise_for_status()
+        main.backend_post(
+            f"/api/runs/{run_id}/todos/{request_id}", {"status": status}
+        ).raise_for_status()
 
     @tool
     def list_waiting_requests() -> str:
         """List the id, type and creation time of each waiting request."""
-        with main.backend() as client:
-            response = client.get("/api/requests/waiting")
+        response = main.backend_get("/api/requests/waiting")
         response.raise_for_status()
         return f"Run cap: {cap} requests, {len(worked)} worked so far.\n{response.text}"
 
@@ -134,11 +129,10 @@ def run_queue(
             *(todo for rid, todo in resumed_todos.items() if rid not in planned_ids),
             *planned,
         ]
-        with main.backend() as client:
-            client.put(
-                f"/api/runs/{run_id}/todos",
-                json={"todos": combined},
-            ).raise_for_status()
+        main.backend_put(
+            f"/api/runs/{run_id}/todos",
+            {"todos": combined},
+        ).raise_for_status()
         return f"Recorded {len(combined)} to-do items."
 
     @tool

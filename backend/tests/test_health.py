@@ -1,8 +1,10 @@
+import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy import update
 
 from agent import main as agent_main
+from agent import service as agent_service
 from backend import main as backend_main
 from backend.main import app
 from backend.store import Store, support_requests
@@ -147,3 +149,62 @@ def test_serves_built_dashboard_and_resolves_backend_url(tmp_path, monkeypatch):
     assert agent_main.backend_url() == "http://127.0.0.1:10000"
     monkeypatch.setenv("UNDERCOVER_API", "https://shoppie.onrender.com/")
     assert agent_main.backend_url() == "https://shoppie.onrender.com"
+
+
+def test_agent_api_key_protects_agent_routes_and_never_stands_in_for_handler(
+    tmp_path, monkeypatch
+):
+    key = "test-agent-secret-key-0123456789abcdef"
+    monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(tmp_path / "auth.sqlite3"))
+    monkeypatch.setenv("UNDERCOVER_API_KEY", key)
+
+    with TestClient(app) as client:
+        assert client.get("/api/policies").status_code == 401
+        assert (
+            client.get("/api/policies", headers={"X-API-Key": "wrong"}).status_code
+            == 401
+        )
+        assert (
+            client.get("/api/policies", headers={"X-API-Key": key}).status_code == 200
+        )
+
+        assert client.get("/api/requests").status_code == 200
+        assert (
+            client.get("/api/requests", headers={"X-API-Key": key}).status_code == 200
+        )
+        assert (
+            client.get("/api/requests", headers={"X-API-Key": "wrong"}).status_code
+            == 401
+        )
+
+        assert (
+            client.post(
+                "/api/requests/REQ-7001/review",
+                json={"outcome": "approve", "notes": "", "reviewed_by": "Priya Nair"},
+                headers={"X-API-Key": key},
+            ).status_code
+            == 401
+        )
+        assert (
+            client.post(
+                "/api/runs",
+                json={"cap": 1},
+                headers={"X-API-Key": key},
+            ).status_code
+            == 401
+        )
+
+    monkeypatch.delenv("UNDERCOVER_API_KEY", raising=False)
+    with TestClient(app) as no_key_client:
+        assert no_key_client.get("/api/health").status_code == 200
+        assert no_key_client.get("/api/requests").status_code == 200
+        assert (
+            no_key_client.get("/api/policies", headers={"X-API-Key": key}).status_code
+            == 401
+        )
+
+    with (
+        pytest.raises(RuntimeError, match="UNDERCOVER_API_KEY is missing"),
+        TestClient(agent_service.app),
+    ):
+        pass

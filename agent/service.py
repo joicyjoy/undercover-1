@@ -1,5 +1,7 @@
 """The Shoppie Agent web service for resuming signed-off requests and starting runs."""
 
+import os
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -8,7 +10,23 @@ from pydantic import BaseModel, Field
 
 from agent import main
 
-app = FastAPI(title="Shoppie Agent")
+
+def require_agent_api_key() -> str:
+    """Return UNDERCOVER_API_KEY or refuse to start when it is missing."""
+    key = os.getenv("UNDERCOVER_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("UNDERCOVER_API_KEY is missing")
+    return key
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Refuse to start the agent service when UNDERCOVER_API_KEY is missing."""
+    require_agent_api_key()
+    yield
+
+
+app = FastAPI(title="Shoppie Agent", lifespan=lifespan)
 
 
 class AgentRunInput(BaseModel):
