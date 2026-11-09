@@ -259,7 +259,7 @@ def test_a_payment_the_gateway_refuses_waits_for_sign_off(api, gateway):
     assert "refused by the gateway" in refusals[-1]["message"].lower()
 
 
-def test_an_mcp_call_leaves_the_main_threads_event_loop(gateway):
+def test_an_mcp_call_leaves_the_main_threads_event_loop(api, gateway):
     """Unit test: verifies get_event_loop() remains functional on main thread."""
     loop = asyncio.get_event_loop()
     tools = McpTools("The stand-in Gateway", gateway.url)

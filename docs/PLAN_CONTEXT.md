@@ -193,10 +193,10 @@ Final end-to-end verification and documentation update:
 
 ### Success criteria
 
-- [ ] `npm run seed` resets the database cleanly.
-- [ ] With `.env` moved aside, `npm run check` passes all Python, TypeScript, server-group import, context-group import, and Playwright end-to-end tests.
-- [ ] `docs/SPEC.md`, `docs/TECH_STACK.md`, `docs/PROCESS.md`, `docs/STATUS.md`, and `data/README.md` are updated.
-- [ ] `git diff --check` passes with 0 errors.
+- [x] `npm run seed` resets the database cleanly.
+- [x] With `.env` moved aside, `npm run check` passes all Python, TypeScript, server-group import, context-group import, and Playwright end-to-end tests.
+- [x] `docs/SPEC.md`, `docs/TECH_STACK.md`, `docs/PROCESS.md`, `docs/STATUS.md`, and `data/README.md` are updated.
+- [x] `git diff --check` passes with 0 errors.
 
 ---
 

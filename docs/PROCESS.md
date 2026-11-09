@@ -1,10 +1,10 @@
 # Process
 
-`uv sync` and `npm install` at the repo root install everything, including a git pre-commit hook. `npm run dev` starts the backend, the agent service (port 8002), and the dashboard. When `DATABASE_URL` is set in `.env` (for example, pointing to the local `shoppie-postgres` Docker container on `127.0.0.1:5432`), `npm run seed` and `npm run dev` use the `undercover` schema in Postgres; automated tests in `npm run check` run offline on SQLite and `InMemorySaver`.
+`uv sync` and `npm install` at the repo root install everything, including a git pre-commit hook. `npm run dev` starts the backend, the agent service (port 8002), and the dashboard. `npm run dev:context` starts the context layer MCP server on port 8006 (`http://127.0.0.1:8006/mcp`). When `DATABASE_URL` is set in `.env` (for example, pointing to the local `shoppie-postgres` Docker container on `127.0.0.1:5432`), `npm run seed` and `npm run dev` use the `undercover` schema in Postgres; automated tests in `npm run check` run offline on SQLite and `InMemorySaver`.
 
 `npm run check` runs every check:
 
-- Python: ruff (lint and format), pyright, pytest with 80% coverage, and an import of `backend.main` with only the `server` dependency group installed (`npm run check:server`)
+- Python: ruff (lint and format), pyright, pytest with 80% coverage, an import of `backend.main` with only the `server` dependency group installed (`npm run check:server`), and an import of `context.server` with only the `context` dependency group installed (`npm run check:context`)
 - TypeScript: ESLint, Prettier, tsc, and vitest with 80% coverage
 - Playwright end-to-end tests
 

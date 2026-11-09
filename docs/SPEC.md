@@ -12,9 +12,10 @@ We want an AI agent, the Shoppie Agent, to help agents work through the support 
 
 - read the customer's request, order details and relevant history
 - look up the sections of the shopping, cancellation and returns policies the request needs, rather than reading whole policies
-- work out the eligible refund amount from Shoppie's policy rules when a refund is in play
-- recommend whether to approve, decline or ask for more information
-- explain the recommendation and cite the policy sections it relied on
+- query the enterprise context layer and search past customer interactions in customer memory
+- work out the eligible refund amount from Shoppie's policy rules when a refund is in play, creating an audited calculation breakdown
+- recommend whether to approve, decline or ask for more information conforming to claims manual section 14 audit standards
+- explain the recommendation and cite the policy sections and context sources it relied on
 
 ## Working the queue
 
@@ -28,27 +29,30 @@ The agent supports the support team; agents remain responsible for processing re
 
 - The queue, with where each request stands: waiting, in progress, waiting for agent review or decided, and which requests were left for a support agent.
 - The current run's to-do list, with each item to do, in progress, done or left for a support agent, and the run's summary when it ends.
-- Each request in full, with the agent's recommendation and its reasons.
-- What the agent is doing on a request while it works, step by step, including the policy sections it read.
+- Each request in full, with the agent's complete recommendation, reasons, manual version, maker, and calculation breakdown line by line.
+- What the agent is doing on a request while it works, step by step: tool calls (with Gateway target names when routed via Gateway), context lookups, memory searches and saves, refusal chips, and errors.
+- The Context used panel, listing every looked-up item grouped by file with each file's source metadata (`system`, `owner`, `reviewed`).
 - The agent's instructions for running the queue and for working a request, read only.
 
 ## Rules
 
 - Recommendations follow Shoppie's cancellation, return and refund policies.
+- Decision records strictly follow claims manual section 14: non-empty reason, section, and decided_by; approvals require a payout matching the attempt's calculation on file; declines and referrals have a payout of zero.
 - The agent must not claim that an action has been completed unless the system confirms it.
 - Requests that need judgment or information should be held for an agent to review.
-- Customer and order data must be limited to what is needed to process the request.
+- Customer and order data must be limited to what is needed to process the request. Customer memory stores only request message and decision record under customer actor ID.
 
 ## Security
 
 - The agent calls the platform with its own API key (`UNDERCOVER_API_KEY`). The routes only the agent uses refuse calls without it, and the key never stands in for a support agent: it cannot sign off on a request or start a run.
-- Before the agent's model sees a request, a security check reads everything the customer wrote. A request that tries to instruct whoever handles it is held for a support agent with the check's reason, cited as "Security check", and the agent's model never sees it.
-- The agent's API is published on its own (`/api/agent/openapi.json`) with only the operations the request agent uses.
+- Before the agent's model sees a request, a security check reads everything the customer wrote. A request that tries to instruct whoever handles it is held for a support agent with the check's reason, cited as "Security check", and the agent's model never sees it. Flagged requests never save events to memory.
+- The agent's API is published on its own (`/api/agent/openapi.json`) with only the six request-agent operations.
 - No refund calculation above ₹10,000.00 is given automatically; the platform refuses it, naming the limit, whatever state the request is in.
+- The agent can be routed directly or through the AgentCore Gateway (`UNDERCOVER_GATEWAY_URL`) with SigV4 signing. Refusals from the Gateway or application are captured cleanly as refusal steps without breaking execution.
 
 ## Our records
 
-The platform uses order, customer, request and policy records provided for the pilot. These records support the queue and the agent's recommendations.
+The platform uses three primary data sources: order records (`customer_orders.json`), customer support requests, and data governance context files (`context/`). These records support the queue, the context layer, and the agent's recommendations.
 
 ## Not for now
 
