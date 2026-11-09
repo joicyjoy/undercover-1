@@ -94,6 +94,8 @@ class ProgressInput(BaseModel):
     """A supported progress stage supplied by the agent."""
 
     stage: str
+    message: str = ""
+    sources: list[dict[str, str]] = []
 
 
 class ReviewInput(BaseModel):
@@ -111,6 +113,12 @@ class CompletionInput(BaseModel):
     notes: str
     reviewed_by: str
     reviewed_at: str
+
+
+class HoldInput(BaseModel):
+    """The reason a payment or resolution was refused."""
+
+    reason: str
 
 
 class RunInput(BaseModel):
@@ -346,7 +354,7 @@ def add_request_step(
     """Record a supported agent progress step."""
     if progress.stage not in AGENT_STAGES:
         raise HTTPException(status_code=422, detail="Unsupported progress stage")
-    if not store_of(request).add_step(request_id, progress.stage):
+    if not store_of(request).add_step(request_id, progress.stage, progress.message):
         raise HTTPException(status_code=409, detail="Request is not in progress")
     return {"status": "recorded", "stage": progress.stage}
 
@@ -474,6 +482,22 @@ def complete_request(
     if not store.complete_request(request_id, payload):
         raise HTTPException(status_code=409, detail="Request cannot be completed")
     return {"request_id": request_id, "status": "decided", "review": payload}
+
+
+@app.post(
+    "/api/requests/{request_id}/hold",
+    operation_id="hold_payment",
+    dependencies=[Depends(require_agent_key)],
+)
+def hold_payment(request_id: str, hold: HoldInput, request: Request) -> dict[str, Any]:
+    """Hold an approved request the Gateway refused to pay for support sign-off."""
+    store = store_of(request)
+    req = require_request(store, request_id)
+    rec = req.get("recommendation")
+    if not rec or rec.get("outcome") != "approve":
+        raise HTTPException(status_code=409, detail="Request is not approved")
+    store.hold_request(request_id, hold.reason)
+    return require_request(store, request_id)
 
 
 @app.post(

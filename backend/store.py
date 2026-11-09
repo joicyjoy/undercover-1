@@ -58,8 +58,19 @@ STEP_MESSAGES = {
         "The agent could not complete its review after two attempts; "
         "support review is needed."
     ),
+    "refusal": "A tool call was refused.",
 }
-AGENT_STAGES = {"security_check", "reading_request", "checking_policy"}
+AGENT_STAGES = {
+    "security_check",
+    "reading_request",
+    "checking_policy",
+    "refusal",
+    "tool_call",
+    "tool_result",
+    "lookup",
+    "memory_search",
+    "memory_save",
+}
 TodoStatus = Literal["to_do", "in_progress", "done", "left_for_support"]
 FailureResult = Literal["waiting", "left_for_support"]
 
@@ -485,6 +496,39 @@ class Store:
             self._insert_step(connection, request_id, "preparing_recommendation")
         return True
 
+    def hold_request(self, request_id: str, reason: str) -> bool:
+        """Hold an approved request whose payment was refused by the Gateway."""
+        with self.engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(
+                        support_requests.c.queue_status,
+                        support_requests.c.recommendation_json,
+                    ).where(support_requests.c.request_id == request_id)
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return False
+            rec = self.decode(row["recommendation_json"]) or {}
+            rec["gateway_refusal"] = reason
+            connection.execute(
+                update(support_requests)
+                .where(support_requests.c.request_id == request_id)
+                .values(
+                    recommendation_json=json.dumps(rec),
+                    queue_status="waiting_for_agent_review",
+                )
+            )
+            self._insert_step(
+                connection,
+                request_id,
+                "refusal",
+                f"Payment refused by the Gateway: {reason}",
+            )
+        return True
+
     def fail_request(self, request_id: str) -> FailureResult | None:
         """Count a failed attempt: back to the queue once, then left for support."""
         with self.engine.begin() as connection:
@@ -726,7 +770,7 @@ class Store:
             insert(request_steps).values(
                 request_id=request_id,
                 stage=stage,
-                message=message or STEP_MESSAGES[stage],
+                message=message or STEP_MESSAGES.get(stage, stage),
                 created_at=now(),
             )
         )

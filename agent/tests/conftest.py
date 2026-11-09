@@ -3,10 +3,21 @@ from contextlib import nullcontext
 import pytest
 from fastapi.testclient import TestClient
 
+from agent import api as agent_api
 from agent import main
+from agent.tests.gateway_stand_in import GatewayStandIn
+from agent.tests.local_server import serving
 from agent.tests.stubs import screening_stub
 from backend.main import app
 from backend.store import Store
+
+
+@pytest.fixture(autouse=True)
+def aws_env(monkeypatch):
+    """Set fake AWS credentials so SigV4 signing succeeds without real AWS keys."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test-key-id")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test-secret-key")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
 
 
 @pytest.fixture
@@ -19,6 +30,7 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "screening_model", screening_stub)
     with TestClient(app) as client:
         monkeypatch.setattr(main, "backend", lambda: nullcontext(client))
+        monkeypatch.setattr(agent_api, "backend", client)
         yield client
 
 
@@ -26,3 +38,19 @@ def api(tmp_path, monkeypatch):
 def store(api) -> Store:
     """Return the store behind the test backend."""
     return app.state.store
+
+
+@pytest.fixture(scope="session")
+def gateway_server():
+    """The stand-in Gateway, served on a local port for the whole session."""
+    stand_in = GatewayStandIn()
+    with serving(stand_in.asgi()) as address:
+        stand_in.url = f"{address}/mcp"
+        yield stand_in
+
+
+@pytest.fixture
+def gateway(gateway_server):
+    """The stand-in Gateway, with nothing called or refused yet in this test."""
+    gateway_server.reset()
+    return gateway_server

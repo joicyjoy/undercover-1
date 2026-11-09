@@ -12,7 +12,10 @@ CITATION = "Shoppie Cancellation Policy: 2. Customer-requested cancellations"
 class StubModel(GenericFakeChatModel):
     """A chat model that gives scripted replies in place of a real model."""
 
+    bound_tools: list[Any] = []
+
     def bind_tools(self, tools, **kwargs):
+        self.bound_tools = getattr(self, "bound_tools", []) + [tools]
         return self
 
     def with_structured_output(self, schema, **kwargs):

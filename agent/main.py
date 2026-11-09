@@ -15,7 +15,6 @@ from langchain.agents.middleware import ModelRetryMiddleware, ToolRetryMiddlewar
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langfuse import propagate_attributes
 from langfuse.langchain import CallbackHandler
@@ -29,10 +28,13 @@ from langgraph.types import Command, interrupt
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field, SecretStr
 
+from agent import direct
+from agent.gateway import Gateway
 from agent.instructions import REQUEST_INSTRUCTIONS
 from agent.models import Recommendation
+from agent.routes import GatewayRefused, Route, Target
 from agent.safety import apply_context_overrides, contains_unsupported_execution_claim
-from backend.refunds import Line, RefundReason
+from agent.tools import make_request_tools as build_tools
 
 load_dotenv(override=True)
 
@@ -256,79 +258,16 @@ def backend_put(path: str, payload: dict[str, Any]) -> httpx.Response:
     return call_with_retry(_send, retry_on=(httpx.TransportError,))
 
 
-def make_request_tools(request_id: str) -> list[Any]:
-    """Create the backend API tools for working one support request."""
+def get_route() -> Route:
+    """Return Gateway route if UNDERCOVER_GATEWAY_URL is set, else Direct route."""
+    if url := os.getenv("UNDERCOVER_GATEWAY_URL"):
+        return Gateway(url)
+    return direct.from_environment()
 
-    @tool
-    def get_request_context() -> str:
-        """Retrieve this request's customer message, evidence, order and history."""
-        response = backend_get(f"/api/requests/{request_id}/context")
-        response.raise_for_status()
-        return response.text
 
-    @tool
-    def list_policy_sections() -> str:
-        """List Shoppie's policies and the id and title of each section."""
-        response = backend_get("/api/policies")
-        response.raise_for_status()
-        return response.text
-
-    @tool
-    def read_policy_section(policy: str, section: str) -> str:
-        """Read one policy section by its policy and section id."""
-        response = backend_get(
-            f"/api/requests/{request_id}/policies/{policy}/sections/{section}"
-        )
-        if response.status_code == httpx.codes.NOT_FOUND:
-            return "No such section. Use list_policy_sections for the ids."
-        if (
-            httpx.codes.BAD_REQUEST
-            <= response.status_code
-            < httpx.codes.INTERNAL_SERVER_ERROR
-        ):
-            return refusal_message(response)
-        response.raise_for_status()
-        return response.text
-
-    @tool
-    def calculate_refund(reason: RefundReason, lines: list[Line]) -> str:
-        """Work out the eligible INR refund for covered items on this request."""
-        response = backend_post(
-            f"/api/requests/{request_id}/refund",
-            {
-                "reason": reason,
-                "lines": [line.model_dump() for line in lines],
-            },
-        )
-        if (
-            httpx.codes.BAD_REQUEST
-            <= response.status_code
-            < httpx.codes.INTERNAL_SERVER_ERROR
-        ):
-            return refusal_message(response)
-        response.raise_for_status()
-        return response.text
-
-    @tool
-    def record_progress(stage: ProgressStage) -> str:
-        """Record a supported progress stage for this request."""
-        response = backend_post(f"/api/requests/{request_id}/steps", {"stage": stage})
-        if (
-            httpx.codes.BAD_REQUEST
-            <= response.status_code
-            < httpx.codes.INTERNAL_SERVER_ERROR
-        ):
-            return refusal_message(response)
-        response.raise_for_status()
-        return response.text
-
-    return [
-        get_request_context,
-        list_policy_sections,
-        read_policy_section,
-        calculate_refund,
-        record_progress,
-    ]
+def make_request_tools(request_id: str, route: Route | None = None) -> list[Any]:
+    """Create the backend API tools for working one support request on a given route."""
+    return list(build_tools(request_id, route or get_route()))
 
 
 def extract_request_context(messages: list[Any]) -> dict[str, Any] | None:
@@ -433,8 +372,11 @@ def run_approval_node(state: RequestState) -> dict[str, Any]:
     return {"review": answer}
 
 
-def run_complete_node(state: RequestState) -> dict[str, Any]:
+def run_complete_node(
+    state: RequestState, route: Route | None = None
+) -> dict[str, Any]:
     """Record the confirmed resolution and complete the request."""
+    active_route = route or get_route()
     review = state.get("review") or {}
     payload = {
         "outcome": review["outcome"],
@@ -442,12 +384,22 @@ def run_complete_node(state: RequestState) -> dict[str, Any]:
         "reviewed_by": review["reviewed_by"],
         "reviewed_at": review.get("reviewed_at") or datetime.now(UTC).isoformat(),
     }
-    detail = backend_get(f"/api/requests/{state['request_id']}").json()
-    if detail["status"] != "decided":
-        completed = backend_post(
-            f"/api/requests/{state['request_id']}/complete", payload
+    try:
+        active_route.call(
+            Target.APP,
+            "complete_request",
+            {"request_id": state["request_id"], **payload},
         )
-        completed.raise_for_status()
+    except GatewayRefused as refused:
+        name = active_route.name(Target.APP, "complete_request")
+        backend_post(
+            f"/api/requests/{state['request_id']}/steps",
+            {"stage": "refusal", "message": f"{name}: {refused.answer}"},
+        )
+        backend_post(
+            f"/api/requests/{state['request_id']}/hold",
+            {"reason": str(refused)},
+        )
     return {"review": payload}
 
 
@@ -455,15 +407,16 @@ def build_request_graph(
     request_id: str,
     llm: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
-    screening_llm: BaseChatModel | None = None,
+    route: Route | None = None,
 ) -> Any:
     """Build and compile the synchronous StateGraph for one support request."""
-    tools = make_request_tools(request_id)
+    active_route = route or get_route()
+    tools = make_request_tools(request_id, active_route)
     system_message = SystemMessage(REQUEST_INSTRUCTIONS)
 
     def screen(state: RequestState) -> dict[str, Any]:
         """Run the security check node on the current request."""
-        return run_screen_node(state, screening_llm)
+        return run_screen_node(state)
 
     def agent(state: RequestState) -> dict[str, Any]:
         """Call the model with the conversation so far."""
@@ -498,11 +451,15 @@ def build_request_graph(
             raise ValueError("The recommendation claims an unconfirmed customer action")
         structured = apply_context_overrides(context, structured)
         recommendation = structured.model_dump()
-        saved = backend_post(
-            f"/api/requests/{state['request_id']}/recommendation", recommendation
+        active_route.call(
+            Target.APP,
+            "save_recommendation",
+            {"request_id": state["request_id"], **recommendation},
         )
-        saved.raise_for_status()
         return {"recommendation": recommendation}
+
+    def complete(state: RequestState) -> dict[str, Any]:
+        return run_complete_node(state, active_route)
 
     builder = StateGraph(RequestState)
     builder.add_node("screen", screen)
@@ -510,7 +467,7 @@ def build_request_graph(
     builder.add_node("tools", ToolNode(tools))
     builder.add_node("decide", decide)
     builder.add_node("approval", run_approval_node)
-    builder.add_node("complete", run_complete_node)
+    builder.add_node("complete", complete)
 
     builder.add_edge(START, "screen")
     builder.add_conditional_edges(
@@ -530,9 +487,10 @@ def run_request(
     thread_id: str,
     llm: BaseChatModel | None = None,
     attempt: int = 1,
+    route: Route | None = None,
 ) -> dict[str, Any]:
     """Run or resume the request graph until it pauses at approval."""
-    graph = build_request_graph(request_id, llm)
+    graph = build_request_graph(request_id, llm, route=route)
     context_manager, config = trace_context(request_id, thread_id)
     state = graph.get_state(config)
     if state.values and state.next and state.next != ("approval",):
@@ -558,9 +516,11 @@ def resume_request_thread(
     thread_id: str,
     review: dict[str, Any],
     llm: BaseChatModel | None = None,
+    route: Route | None = None,
 ) -> dict[str, Any]:
     """Resume a paused request thread with the support agent's sign-off."""
-    graph = build_request_graph(request_id, llm)
+    active_route = route or get_route()
+    graph = build_request_graph(request_id, llm, route=active_route)
     context_manager, config = trace_context(request_id, thread_id)
     state = graph.get_state(config)
     if state.next:
@@ -572,14 +532,18 @@ def resume_request_thread(
         "reviewed_by": review["reviewed_by"],
         "reviewed_at": review.get("reviewed_at") or datetime.now(UTC).isoformat(),
     }
-    detail = backend_get(f"/api/requests/{request_id}").json()
-    if detail["status"] != "decided":
-        completed = backend_post(f"/api/requests/{request_id}/complete", payload)
-        completed.raise_for_status()
+    run_complete_node(
+        {"request_id": request_id, "review": payload},  # type: ignore[typeddict-item]
+        active_route,
+    )
     return {**(state.values or {}), "review": payload}
 
 
-def resume_request(request_id: str, llm: BaseChatModel | None = None) -> dict[str, Any]:
+def resume_request(
+    request_id: str,
+    llm: BaseChatModel | None = None,
+    route: Route | None = None,
+) -> dict[str, Any]:
     """Resume a signed-off request by its request id and complete it."""
     response = backend_get(f"/api/requests/{request_id}")
     if response.status_code == httpx.codes.NOT_FOUND:
@@ -591,7 +555,7 @@ def resume_request(request_id: str, llm: BaseChatModel | None = None) -> dict[st
         raise ValueError(f"Request {request_id} has no review to resume")
     attempt = int(detail["attempts"]) + 1
     thread_id = f"request-{request_id}-attempt-{attempt}"
-    result = resume_request_thread(request_id, thread_id, review, llm)
+    result = resume_request_thread(request_id, thread_id, review, llm, route=route)
     return {
         "request_id": request_id,
         "status": "decided",
@@ -607,30 +571,40 @@ def _skipped_result(request_id: str) -> WorkResult:
     }
 
 
-def work_request(request_id: str, llm: BaseChatModel | None = None) -> WorkResult:
+def work_request(
+    request_id: str,
+    llm: BaseChatModel | None = None,
+    route: Route | None = None,
+) -> WorkResult:
     """Work one waiting or interrupted request and report back in a line."""
     response = backend_post(f"/api/requests/{request_id}/start")
     if response.status_code == httpx.codes.NOT_FOUND:
         return _skipped_result(request_id)
     if response.status_code == httpx.codes.CONFLICT:
         detail = backend_get(f"/api/requests/{request_id}").json()
-        if detail["status"] != "in_progress":
-            return _skipped_result(request_id)
         if detail.get("review") is not None:
-            resumed = resume_request(request_id, llm)
+            resumed = resume_request(request_id, llm, route=route)
             outcome = resumed["review"]["outcome"]
             return {
                 "request_id": request_id,
                 "status": "done",
                 "line": f"{request_id}: {outcome}, completed after support review.",
             }
+        if detail["status"] != "in_progress":
+            return _skipped_result(request_id)
         attempt = int(detail["attempts"]) + 1
     else:
         response.raise_for_status()
         attempt = response.json()["attempt"]
     thread_id = f"request-{request_id}-attempt-{attempt}"
     try:
-        recommendation = run_request(request_id, thread_id, llm, attempt=attempt)
+        recommendation = run_request(
+            request_id,
+            thread_id,
+            llm,
+            attempt=attempt,
+            route=route,
+        )
     except Exception as error:
         get_checkpointer().delete_thread(thread_id)
         failure = backend_post(f"/api/requests/{request_id}/failure")
