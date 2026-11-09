@@ -10,6 +10,10 @@ import type {
   TodoStatus,
 } from "./types";
 import { formatDate, formatMoney, humanize } from "./format";
+import { CalculationTable } from "./ContextUsed";
+
+export { CalculationTable, ContextUsed } from "./ContextUsed";
+export { ProgressCard } from "./ProgressCard";
 
 const statusLabels: Record<QueueStatus, string> = {
   waiting: "Waiting",
@@ -272,6 +276,7 @@ export function OrderCard({ detail }: Readonly<{ detail: RequestDetail }>) {
 export function RecommendationCard({
   recommendation,
 }: Readonly<{ recommendation: Recommendation }>) {
+  const payout = recommendation.payout;
   return (
     <article className="panel recommendation-panel">
       <div className="panel-heading">
@@ -279,76 +284,58 @@ export function RecommendationCard({
           <p className="eyebrow">SHOPPIE AGENT</p>
           <h2>Recommendation</h2>
         </div>
-        <span className={`outcome-pill outcome-${recommendation.outcome}`}>
-          {outcomeLabels[recommendation.outcome]}
-        </span>
+        <div className="outcome-row">
+          <span className={`outcome-pill outcome-${recommendation.outcome}`}>
+            {outcomeLabels[recommendation.outcome]}
+          </span>
+          {payout !== undefined && payout > 0 && (
+            <span className="payout mono">{formatMoney(payout)}</span>
+          )}
+        </div>
       </div>
       {recommendation.priority_human_review && (
         <p className="priority-note">Priority human review recommended</p>
       )}
-      <p className="recommendation-rationale">{recommendation.rationale}</p>
-      <div className="citation-block">
-        <small>POLICY REFERENCES</small>
-        <ul>
-          {recommendation.policy_citations.map((citation) => (
-            <li key={citation}>{citation}</li>
-          ))}
-        </ul>
-      </div>
-      <p className="next-action">
-        <strong>Suggested next step</strong>
-        {recommendation.next_action}
+      {recommendation.calculation && (
+        <CalculationTable calculation={recommendation.calculation} />
+      )}
+      <p className="recommendation-rationale">
+        {recommendation.rationale || recommendation.reason}
       </p>
-    </article>
-  );
-}
-
-export function ProgressCard({ detail }: Readonly<{ detail: RequestDetail }>) {
-  const sectionsRead = detail.steps
-    .filter((step) => step.stage === "read_section")
-    .map((step) => step.message.replace(/^Read /, "").replace(/\.$/, ""));
-  return (
-    <article className="panel timeline-panel">
-      <div className="panel-heading">
-        <div>
-          <p className="eyebrow">REQUEST ACTIVITY</p>
-          <h2>Progress</h2>
-        </div>
-        {detail.status === "in_progress" && (
-          <span className="working-indicator">
-            <i /> Working
-          </span>
-        )}
-      </div>
-      {sectionsRead.length > 0 && (
-        <div className="citation-block sections-read">
-          <small>POLICY SECTIONS READ</small>
+      {recommendation.section && (
+        <p className="section-ref">{recommendation.section}</p>
+      )}
+      {recommendation.policy_citations.length > 0 && (
+        <div className="citation-block">
+          <small>POLICY REFERENCES</small>
           <ul>
-            {[...new Set(sectionsRead)].map((section) => (
-              <li key={section}>{section}</li>
+            {recommendation.policy_citations.map((citation) => (
+              <li key={citation}>{citation}</li>
             ))}
           </ul>
         </div>
       )}
-      {detail.steps.length === 0 ? (
-        <p className="muted">No agent activity yet.</p>
-      ) : (
-        <ol className="timeline">
-          {detail.steps.map((step, index) => (
-            <li
-              className="timeline-step"
-              key={`${String(index)}-${step.created_at}`}
-            >
-              <span
-                className={`timeline-dot ${index === detail.steps.length - 1 && detail.status === "in_progress" ? "active" : ""}`}
-              />
-              <div>
-                <p>{step.message}</p>
-                <time>{formatDate(step.created_at)} IST</time>
-              </div>
-            </li>
-          ))}
-        </ol>
+      {recommendation.next_action && (
+        <p className="next-action">
+          <strong>Suggested next step</strong>
+          {recommendation.next_action}
+        </p>
+      )}
+      {recommendation.decided_by && recommendation.decided_at && (
+        <p className="small muted">
+          Decided by {recommendation.decided_by} at{" "}
+          {formatDate(recommendation.decided_at)} IST
+        </p>
+      )}
+      {recommendation.manual_version && (
+        <p className="small muted">
+          Claims manual version {recommendation.manual_version}
+        </p>
+      )}
+      {recommendation.gateway_refusal && (
+        <p className="chip step-refused">
+          Gateway refused: {recommendation.gateway_refusal}
+        </p>
       )}
     </article>
   );

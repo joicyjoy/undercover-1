@@ -172,9 +172,9 @@ Update the dashboard to visualize context and memory:
 
 ### Success criteria
 
-- [ ] Vitest unit tests verify rendering of each step kind, refusal badges, Context used panel grouped by file, and full decision calculation breakdown.
-- [ ] Playwright E2E tests verify the complete request page with lookups, Context used panel, and decision calculations.
-- [ ] `npm run check:ts` and `npm run e2e` pass.
+- [x] Vitest unit tests verify rendering of each step kind, refusal badges, Context used panel grouped by file, and full decision calculation breakdown.
+- [x] Playwright E2E tests verify the complete request page with lookups, Context used panel, and decision calculations.
+- [x] `npm run check:ts` and `npm run e2e` pass.
 
 ---
 

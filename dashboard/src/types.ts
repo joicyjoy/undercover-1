@@ -21,12 +21,45 @@ export interface Review {
   reviewed_at: string;
 }
 
+export interface Source {
+  file: string;
+  system: string;
+  owner: string;
+  reviewed: string;
+}
+
+export interface CalculationStep {
+  step: string;
+  amount: number;
+}
+
+export interface Calculation {
+  lines: CalculationStep[];
+  payout: number;
+}
+
 export interface Recommendation {
   outcome: Outcome;
   rationale: string;
   policy_citations: string[];
   next_action: string;
   priority_human_review: boolean;
+  decision?: string;
+  payout?: number;
+  calculation?: Calculation | null;
+  section?: string;
+  reason?: string;
+  decided_by?: string;
+  decided_at?: string;
+  manual_version?: string;
+  gateway_refusal?: string | null;
+}
+
+export interface RequestStep {
+  stage: string;
+  message: string;
+  created_at: string;
+  sources?: Source[];
 }
 
 export interface SupportRequest {
@@ -64,7 +97,7 @@ export interface RequestDetail {
   attempts: number;
   recommendation: Recommendation | null;
   review: Review | null;
-  steps: { stage: string; message: string; created_at: string }[];
+  steps: RequestStep[];
 }
 
 export type TodoStatus = "to_do" | "in_progress" | "done" | "left_for_support";

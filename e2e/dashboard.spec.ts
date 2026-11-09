@@ -192,11 +192,28 @@ test("support agent signs off on a held request and the backend completes it dir
   await request.post("http://127.0.0.1:8000/api/requests/REQ-7008/start", {
     headers: AGENT_HEADERS,
   });
+  const calcRes = await request.post(
+    "http://127.0.0.1:8000/api/requests/REQ-7008/refund",
+    {
+      headers: AGENT_HEADERS,
+      data: {
+        reason: "cancellation",
+        lines: [{ item_id: "ITM-10008-1", quantity: 2 }],
+      },
+    },
+  );
+  const calc = (await calcRes.json()) as { refund: number };
   await request.post(
     "http://127.0.0.1:8000/api/requests/REQ-7008/recommendation",
     {
       headers: AGENT_HEADERS,
       data: {
+        decision: "approve",
+        payout: calc.refund,
+        section:
+          "Shoppie Cancellation Policy: 2. Customer-requested cancellations",
+        reason: "Order has not been dispatched and is within the window.",
+        decided_by: "Shoppie Agent",
         outcome: "approve",
         rationale: "Order has not been dispatched and is within the window.",
         policy_citations: [
@@ -228,4 +245,122 @@ test("support agent signs off on a held request and the backend completes it dir
     "http://127.0.0.1:8000/api/requests/REQ-7008",
   );
   expect(((await decided.json()) as { status: string }).status).toBe("decided");
+});
+
+test("the request page shows every kind of step, the context used and the whole decision record", async ({
+  page,
+  request,
+}) => {
+  const manual = {
+    file: "claims_manual.md",
+    system: "Claims operations",
+    owner: "Head of claims operations",
+    reviewed: "2026-09-01",
+  };
+  await request.post("http://127.0.0.1:8000/api/requests/REQ-7004/start", {
+    headers: AGENT_HEADERS,
+  });
+  await request.post("http://127.0.0.1:8000/api/requests/REQ-7004/steps", {
+    headers: AGENT_HEADERS,
+    data: {
+      stage: "lookup",
+      message: "Claims manual, section 2: Cancellation",
+      sources: [manual],
+    },
+  });
+  await request.post("http://127.0.0.1:8000/api/requests/REQ-7004/steps", {
+    headers: AGENT_HEADERS,
+    data: {
+      stage: "lookup",
+      message: 'Reference data: "zeppelin"',
+      sources: [],
+    },
+  });
+  await request.post("http://127.0.0.1:8000/api/requests/REQ-7004/steps", {
+    headers: AGENT_HEADERS,
+    data: {
+      stage: "memory_search",
+      message: '"earlier requests"\n- No earlier requests found.',
+    },
+  });
+  await request.post("http://127.0.0.1:8000/api/requests/REQ-7004/steps", {
+    headers: AGENT_HEADERS,
+    data: {
+      stage: "refusal",
+      message:
+        "calculate_refund: Refused with status 422: Claims manual section 14",
+    },
+  });
+  const calcRes = await request.post(
+    "http://127.0.0.1:8000/api/requests/REQ-7004/refund",
+    {
+      headers: AGENT_HEADERS,
+      data: {
+        reason: "cancellation",
+        lines: [{ item_id: "ITM-10004-1", quantity: 1 }],
+      },
+    },
+  );
+  const calc = (await calcRes.json()) as { refund: number };
+  await request.post("http://127.0.0.1:8000/api/requests/REQ-7004/steps", {
+    headers: AGENT_HEADERS,
+    data: {
+      stage: "memory_save",
+      message: "Request REQ-7004: Cancellation approved",
+    },
+  });
+  await request.post(
+    "http://127.0.0.1:8000/api/requests/REQ-7004/recommendation",
+    {
+      headers: AGENT_HEADERS,
+      data: {
+        decision: "approve",
+        payout: calc.refund,
+        section: "Cancellation Policy, section 2",
+        reason: "Order has not dispatched and cancellation requested in time.",
+        decided_by: "Shoppie Agent",
+      },
+    },
+  );
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /REQ-7004/ }).click();
+
+  const used = page.locator("section.context-used-panel");
+  await expect(used.getByRole("heading", { level: 3 })).toHaveText([
+    "claims_manual.md",
+    "Found nothing",
+  ]);
+  await expect(
+    used.getByText(
+      "Claims operations, owned by the Head of claims operations, reviewed Sep 1, 2026",
+      { exact: true },
+    ),
+  ).toBeVisible();
+
+  await expect(
+    used.getByText("Claims manual, section 2: Cancellation"),
+  ).toBeVisible();
+  await expect(used.getByText('Reference data: "zeppelin"')).toBeVisible();
+
+  const timeline = page.locator("article.timeline-panel");
+  await expect(
+    timeline.getByText("Claims manual, section 2: Cancellation"),
+  ).toBeVisible();
+  await expect(timeline.getByText('Reference data: "zeppelin"')).toBeVisible();
+  await expect(
+    timeline.getByText(/Searched memory.*earlier requests/),
+  ).toBeVisible();
+  await expect(
+    timeline.getByText(
+      /Saved to memory.*Request REQ-7004: Cancellation approved/,
+    ),
+  ).toBeVisible();
+  await expect(timeline.getByText("Refused").first()).toBeVisible();
+
+  const rec = page.locator("article.recommendation-panel");
+  await expect(rec.getByText("How the payout was worked out")).toBeVisible();
+  await expect(rec.getByRole("row").last()).toContainText("Payout");
+  await expect(rec.getByText(/^Decided by Shoppie Agent at/)).toBeVisible();
+  await expect(rec.getByText("Claims manual version 2026.2")).toBeVisible();
 });

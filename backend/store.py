@@ -110,6 +110,7 @@ request_steps = Table(
     ),
     Column("stage", Text, nullable=False),
     Column("message", Text, nullable=False),
+    Column("sources", Text, nullable=True),
     Column("created_at", Text, nullable=False),
 )
 
@@ -403,6 +404,7 @@ class Store:
                         request_steps.c.stage,
                         request_steps.c.message,
                         request_steps.c.created_at,
+                        request_steps.c.sources,
                     )
                     .where(request_steps.c.request_id == request_id)
                     .order_by(request_steps.c.step_id)
@@ -410,6 +412,18 @@ class Store:
                 .mappings()
                 .all()
             )
+        formatted_steps: list[dict[str, Any]] = []
+        for step in step_rows:
+            s = dict(step)
+            raw_sources = s.pop("sources", None)
+            if raw_sources:
+                try:
+                    s["sources"] = json.loads(raw_sources)
+                except Exception:
+                    s["sources"] = []
+            else:
+                s["sources"] = []
+            formatted_steps.append(s)
         return {
             "request": json.loads(row["request_json"]),
             "customer": {
@@ -421,7 +435,7 @@ class Store:
             "attempts": row["attempts"],
             "recommendation": self.decode(row["recommendation_json"]),
             "review": self.decode(row["review_json"]),
-            "steps": [dict(step) for step in step_rows],
+            "steps": formatted_steps,
         }
 
     def start_request(self, request_id: str) -> int | None:
@@ -472,7 +486,13 @@ class Store:
             ).scalar_one_or_none()
         return status == "in_progress"
 
-    def add_step(self, request_id: str, stage: str, message: str = "") -> bool:
+    def add_step(
+        self,
+        request_id: str,
+        stage: str,
+        message: str = "",
+        sources: list[dict[str, str]] | None = None,
+    ) -> bool:
         """Record a progress step while a request is running."""
         with self.engine.begin() as connection:
             status = connection.execute(
@@ -482,7 +502,7 @@ class Store:
             ).scalar_one_or_none()
             if status != "in_progress":
                 return False
-            self._insert_step(connection, request_id, stage, message)
+            self._insert_step(connection, request_id, stage, message, sources)
         return True
 
     def keep_calculation(
@@ -848,16 +868,21 @@ class Store:
 
     @staticmethod
     def _insert_step(
-        connection: Any, request_id: str, stage: str, message: str = ""
+        connection: Any,
+        request_id: str,
+        stage: str,
+        message: str = "",
+        sources: list[dict[str, str]] | None = None,
     ) -> None:
-        connection.execute(
-            insert(request_steps).values(
-                request_id=request_id,
-                stage=stage,
-                message=message or STEP_MESSAGES.get(stage, stage),
-                created_at=now(),
-            )
-        )
+        values: dict[str, Any] = {
+            "request_id": request_id,
+            "stage": stage,
+            "message": message or STEP_MESSAGES.get(stage, stage),
+            "created_at": now(),
+        }
+        if sources is not None:
+            values["sources"] = json.dumps(sources)
+        connection.execute(insert(request_steps).values(**values))
 
     @staticmethod
     def decode(value: str | None) -> Any:

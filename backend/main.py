@@ -353,7 +353,9 @@ def add_request_step(
     """Record a supported agent progress step."""
     if progress.stage not in AGENT_STAGES:
         raise HTTPException(status_code=422, detail="Unsupported progress stage")
-    if not store_of(request).add_step(request_id, progress.stage, progress.message):
+    if not store_of(request).add_step(
+        request_id, progress.stage, progress.message, progress.sources
+    ):
         raise HTTPException(status_code=409, detail="Request is not in progress")
     return {"status": "recorded", "stage": progress.stage}
 

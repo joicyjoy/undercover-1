@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ActionPanel,
+  ContextUsed,
   OrderCard,
   ProgressCard,
   QueuePanel,
@@ -220,6 +221,7 @@ export function App() {
               {detail.recommendation && (
                 <RecommendationCard recommendation={detail.recommendation} />
               )}
+              <ContextUsed steps={detail.steps} />
               <ReviewRecord detail={detail} />
               <ActionPanel
                 detail={detail}
