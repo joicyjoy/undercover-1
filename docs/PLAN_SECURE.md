@@ -112,10 +112,10 @@ Decouple `backend/` from `agent/`, add the Lambda handler and connection pooling
 
 ### Success criteria
 
-- [ ] A test calls `backend.main.handler` (`Mangum(app, lifespan="off")`) with a Lambda Function URL v2 event for `/api/health`, `/` and `/requests/REQ-7001` (with a stand-in `dashboard/dist`), verifying `200` responses without the lifespan startup hook running.
-- [ ] A unit test with `AWS_LAMBDA_FUNCTION_NAME` set verifies `build_engine` uses `NullPool` and `prepare_threshold=None` in `connect_args`.
-- [ ] `uv run --isolated --only-group server python -c "import backend.main"` passes as part of `npm run check`.
-- [ ] Building the Linux Python 3.12 deployment zip (`backend/`, `data/`, `dashboard/dist/`, and `--only-group server` wheels) in a temporary folder produces an archive under Lambda's 50 MB limit (size reported in `docs/STATUS.md`).
-- [ ] With `.env` moved aside, `npm run check` passes all Python, TypeScript, server-group import, and Playwright end-to-end checks.
-- [ ] After `npm run seed` and with `npm run dev` (and on Render after redeploying), `REQ-7901` is flagged by the security check and held for support with the check's reason, `curl` to an agent route without `X-API-Key` returns `401`, `GET /api/agent/openapi.json` returns the 8 agent operations, and support sign-off on the dashboard immediately marks a held request `decided`.
-- [ ] `docs/SPEC.md`, `docs/TECH_STACK.md`, `docs/PROCESS.md`, `docs/STATUS.md`, and `data/README.md` are updated and `git diff --check` passes.
+- [x] A test calls `backend.main.handler` (`Mangum(app, lifespan="off")`) with a Lambda Function URL v2 event for `/api/health`, `/` and `/requests/REQ-7001` (with a stand-in `dashboard/dist`), verifying `200` responses without the lifespan startup hook running.
+- [x] A unit test with `AWS_LAMBDA_FUNCTION_NAME` set verifies `build_engine` uses `NullPool` and `prepare_threshold=None` in `connect_args`.
+- [x] `uv run --isolated --only-group server python -c "import backend.main"` passes as part of `npm run check`.
+- [x] Building the Linux Python 3.12 deployment zip (`backend/`, `data/`, `dashboard/dist/`, and `--only-group server` wheels) in a temporary folder produces an archive under Lambda's 50 MB limit (size reported in `docs/STATUS.md`).
+- [x] With `.env` moved aside, `npm run check` passes all Python, TypeScript, server-group import, and Playwright end-to-end checks.
+- [x] After `npm run seed` and with `npm run dev` (and on Render after redeploying), `REQ-7901` is flagged by the security check and held for support with the check's reason, `curl` to an agent route without `X-API-Key` returns `401`, `GET /api/agent/openapi.json` returns the 8 agent operations, and support sign-off on the dashboard immediately marks a held request `decided`.
+- [x] `docs/SPEC.md`, `docs/TECH_STACK.md`, `docs/PROCESS.md`, `docs/STATUS.md`, and `data/README.md` are updated and `git diff --check` passes.

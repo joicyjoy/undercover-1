@@ -4,7 +4,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from agent import main
-from agent.queue import run_queue
+from agent.queue import run_queue, work_run
 from agent.tests.stubs import StubModel, call, scripted_model
 
 
@@ -213,3 +213,25 @@ def test_run_finishes_signed_off_and_stopped_requests_when_agent_was_unreachable
     assert queue["REQ-7002"] == "waiting_for_agent_review"
     assert queue["REQ-7007"] == "waiting_for_agent_review"
     assert todo_statuses(store) == {"REQ-7002": "done", "REQ-7007": "done"}
+
+
+def test_work_run_reports_a_finished_run_to_the_backend(store):
+    run_id = start(store, 1)
+    llm = queue_model(todos("REQ-7007"), work("REQ-7007"), finish("Worked one."))
+
+    assert work_run(run_id, 1, llm, request_models()) == "finished"
+
+    run = store.current_run()
+    assert run["status"] == "finished"
+    assert run["summary"] == "Worked one."
+
+
+def test_work_run_reports_a_failed_run_to_the_backend(store):
+    run_id = start(store, 1)
+    llm = queue_model(*(finish() for _ in range(4)))
+
+    assert work_run(run_id, 1, llm, request_models()) == "failed"
+
+    run = store.current_run()
+    assert run["status"] == "failed"
+    assert "left requests unworked" in run["summary"]

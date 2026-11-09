@@ -181,3 +181,22 @@ def run_queue(
         },
     )
     return result["messages"][-1].text
+
+
+def work_run(
+    run_id: str,
+    cap: int,
+    llm: BaseChatModel | None = None,
+    request_model: Callable[[], BaseChatModel] | None = None,
+) -> str:
+    """Work a run and report how it ended to the backend's finish_run route."""
+    try:
+        summary = run_queue(run_id, cap, llm, request_model)
+        status = "finished"
+    except Exception as error:
+        summary = f"The run stopped: {error}"
+        status = "failed"
+    main.backend_post(
+        f"/api/runs/{run_id}/finish", {"status": status, "summary": summary}
+    ).raise_for_status()
+    return status

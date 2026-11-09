@@ -15,7 +15,8 @@
     "seed": "uv run -m backend.seed",
     "format": "uv run ruff format && prettier --write -u dashboard e2e *.config.*",
     "check": "npm run check:python && npm run check:ts && npm run e2e",
-    "check:python": "uv run ruff format --check && uv run ruff check && pyright && uv run pytest -q",
+    "check:python": "uv run ruff format --check && uv run ruff check && pyright && uv run pytest -q && npm run check:server",
+    "check:server": "uv run --isolated --only-group server python -c \"import backend.main\"",
     "check:ts": "prettier --check -u dashboard e2e *.config.* && eslint dashboard e2e *.config.* && tsc && vitest run --root dashboard --coverage",
     "e2e": "playwright test"
   },

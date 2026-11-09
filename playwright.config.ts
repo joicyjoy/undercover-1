@@ -13,6 +13,7 @@ export default defineConfig({
       reuseExistingServer: true,
       env: {
         UNDERCOVER_AGENT: "http://127.0.0.1:8003",
+        UNDERCOVER_API_KEY: "e2e-agent-secret-key-0123456789abcdef",
         SHOPPIE_DATABASE_PATH: "data/e2e.sqlite3",
       },
     },

@@ -449,3 +449,18 @@ def test_agent_service_resumes_signed_off_request_and_runs_queue(
         started_run = agent_client.post("/runs", json={"cap": 2})
         assert started_run.status_code == 200
         assert agent_client.post("/runs", json={"cap": 2}).status_code == 409
+
+        worked: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            service.queue, "work_run", lambda rid, cap: worked.append((rid, cap))
+        )
+        run_id = started_run.json()["run_id"]
+        refused = agent_client.post(f"/runs/{run_id}/work", json={"cap": 2})
+        accepted = agent_client.post(
+            f"/runs/{run_id}/work",
+            json={"cap": 2},
+            headers={"X-API-Key": "test-agent-secret-key-0123456789abcdef"},
+        )
+        assert refused.status_code == 401
+        assert accepted.json()["status"] == "accepted"
+        assert worked == [(run_id, 2)]

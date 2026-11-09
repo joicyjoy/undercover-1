@@ -24,6 +24,7 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy.pool import NullPool
 
 DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "customer_orders.json"
 SECURITY_DATA_PATH = (
@@ -139,11 +140,19 @@ def build_engine(
 ) -> tuple[Engine, bool]:
     """Create a SQLAlchemy engine for Postgres (with undercover schema) or SQLite."""
     if database_url:
+        options = f"-c search_path={SCHEMA}"
+        if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+            engine = create_engine(
+                sqlalchemy_postgres_url(database_url),
+                poolclass=NullPool,
+                connect_args={"options": options, "prepare_threshold": None},
+            )
+            return engine, True
         engine = create_engine(
             sqlalchemy_postgres_url(database_url),
             pool_size=MAX_POOL_SIZE,
             max_overflow=MAX_OVERFLOW,
-            connect_args={"options": f"-c search_path={SCHEMA}"},
+            connect_args={"options": options},
         )
         return engine, True
     database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -546,10 +555,8 @@ class Store:
                     connection,
                     request_id,
                     "completed",
-                    (
-                        f"Confirmed resolution ({review['outcome']}) after review by "
-                        f"{review['reviewed_by']}."
-                    ),
+                    f"Confirmed {review['outcome']} after review by "
+                    f"{review['reviewed_by']}.",
                 )
         return "decided"
 

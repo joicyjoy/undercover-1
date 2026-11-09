@@ -1,3 +1,7 @@
+import json
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
@@ -110,6 +114,7 @@ def test_api_routes_have_operation_ids_and_no_query_inputs():
     post_paths = {route.path for route in routes if "POST" in (route.methods or set())}
     assert post_paths == {
         "/api/runs",
+        "/api/runs/{run_id}/finish",
         "/api/runs/{run_id}/todos/{request_id}",
         "/api/requests/{request_id}/steps",
         "/api/requests/{request_id}/refund",
@@ -119,6 +124,69 @@ def test_api_routes_have_operation_ids_and_no_query_inputs():
         "/api/requests/{request_id}/review",
         "/api/requests/{request_id}/complete",
     }
+
+
+def function_url_event(path: str) -> dict[str, object]:
+    """Build a Lambda Function URL (payload v2) GET event for a path."""
+    return {
+        "version": "2.0",
+        "routeKey": "$default",
+        "rawPath": path,
+        "rawQueryString": "",
+        "headers": {"host": "shoppie.lambda-url.ap-south-1.on.aws"},
+        "requestContext": {
+            "accountId": "123456789012",
+            "apiId": "shoppie",
+            "domainName": "shoppie.lambda-url.ap-south-1.on.aws",
+            "domainPrefix": "shoppie",
+            "http": {
+                "method": "GET",
+                "path": path,
+                "protocol": "HTTP/1.1",
+                "sourceIp": "203.0.113.1",
+                "userAgent": "pytest",
+            },
+            "requestId": "test-request",
+            "routeKey": "$default",
+            "stage": "$default",
+            "time": "09/Nov/2026:12:00:00 +0000",
+            "timeEpoch": 1794225600000,
+        },
+        "isBase64Encoded": False,
+    }
+
+
+def test_lambda_handler_serves_api_and_dashboard_without_lifespan(
+    tmp_path, monkeypatch
+):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><title>Shoppie</title>")
+    database = tmp_path / "lambda.sqlite3"
+    Store(database).initialize()
+    monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(database))
+    monkeypatch.setattr(backend_main, "DASHBOARD_DIST", dist)
+    if hasattr(app.state, "store"):
+        monkeypatch.delattr(app.state, "store")
+    lambda_context: Any = SimpleNamespace(
+        function_name="shoppie-backend", aws_request_id="test-request"
+    )
+
+    health = backend_main.handler(function_url_event("/api/health"), lambda_context)
+    root = backend_main.handler(function_url_event("/"), lambda_context)
+    page = backend_main.handler(
+        function_url_event("/requests/REQ-7001"), lambda_context
+    )
+    queue = backend_main.handler(function_url_event("/api/requests"), lambda_context)
+
+    assert health["statusCode"] == 200
+    assert json.loads(health["body"]) == {"status": "ok"}
+    assert root["statusCode"] == 200
+    assert "<title>Shoppie</title>" in root["body"]
+    assert page["statusCode"] == 200
+    assert "<title>Shoppie</title>" in page["body"]
+    assert queue["statusCode"] == 200
+    assert len(json.loads(queue["body"])) == 9
 
 
 def test_serves_built_dashboard_and_resolves_backend_url(tmp_path, monkeypatch):

@@ -3169,18 +3169,20 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
-server = [
-    { name = "fastapi" },
-    { name = "httpx" },
+runtime = [
     { name = "langchain" },
     { name = "langchain-openai" },
     { name = "langfuse" },
     { name = "langgraph-checkpoint-postgres" },
+    { name = "python-dotenv" },
+]
+server = [
+    { name = "fastapi" },
+    { name = "httpx" },
     { name = "mangum" },
     { name = "openrouter" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyjwt", extra = ["crypto"] },
-    { name = "python-dotenv" },
     { name = "sqlalchemy" },
     { name = "uvicorn" },
 ]
@@ -3222,18 +3224,20 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.16.9" },
 ]
-server = [
-    { name = "fastapi", specifier = ">=0.141.1" },
-    { name = "httpx", specifier = ">=0.28.1" },
+runtime = [
     { name = "langchain", specifier = ">=1.4.2" },
     { name = "langchain-openai", specifier = ">=1.6.2" },
     { name = "langfuse", specifier = ">=4.16.0" },
     { name = "langgraph-checkpoint-postgres", specifier = ">=3.1.2" },
+    { name = "python-dotenv", specifier = ">=1.2.3" },
+]
+server = [
+    { name = "fastapi", specifier = ">=0.141.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "mangum", specifier = ">=0.22.0" },
     { name = "openrouter", specifier = ">=1.2.1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.1" },
-    { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "sqlalchemy", specifier = ">=2.1.3" },
     { name = "uvicorn", specifier = ">=0.54.0" },
 ]

@@ -18,7 +18,7 @@ We want an AI agent, the Shoppie Agent, to help agents work through the support 
 
 ## Working the queue
 
-One run works the whole queue. A support agent starts the agent once, with a cap on how many requests the run may work, and the agent plans the run as a to-do list, chooses the order, works each waiting request up to the cap, and finishes with a short summary. Each request attempt runs on its own checkpointed thread and pauses once its recommendation is ready for support review. When a support agent signs off on a held request with their name, the paused request thread resumes and completes the request. One named request can also be worked on its own.
+One run works the whole queue. A support agent starts the agent once, with a cap on how many requests the run may work, and the agent plans the run as a to-do list, chooses the order, works each waiting request up to the cap, and finishes with a short summary. Each request attempt runs on its own checkpointed thread and pauses once its recommendation is ready for support review. When a support agent signs off on a held request with their name, the platform records the confirmed resolution and the request is decided straight away, whether or not the agent service is reachable; any paused request thread is then closed without completing the request a second time. One named request can also be worked on its own.
 
 A long run will meet timeouts, errors and process restarts. If a run or service stops partway through an attempt, the next run resumes that request from its last saved checkpoint on the same attempt rather than starting over. A request whose attempt fails before it has a recommendation goes back in the queue and is tried again on a fresh attempt, and one that fails twice is left for a support agent. No request gets two recommendations or two reviews. Before it finishes, the agent checks it has not missed a waiting request within its cap.
 
@@ -38,6 +38,13 @@ The agent supports the support team; agents remain responsible for processing re
 - The agent must not claim that an action has been completed unless the system confirms it.
 - Requests that need judgment or information should be held for an agent to review.
 - Customer and order data must be limited to what is needed to process the request.
+
+## Security
+
+- The agent calls the platform with its own API key (`UNDERCOVER_API_KEY`). The routes only the agent uses refuse calls without it, and the key never stands in for a support agent: it cannot sign off on a request or start a run.
+- Before the agent's model sees a request, a security check reads everything the customer wrote. A request that tries to instruct whoever handles it is held for a support agent with the check's reason, cited as "Security check", and the agent's model never sees it.
+- The agent's API is published on its own (`/api/agent/openapi.json`) with only the operations the request agent uses.
+- No refund calculation above ₹10,000.00 is given automatically; the platform refuses it, naming the limit, whatever state the request is in.
 
 ## Our records
 

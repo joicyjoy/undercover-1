@@ -4,9 +4,11 @@
 
 `npm run check` runs every check:
 
-- Python: ruff (lint and format), pyright, and pytest with 80% coverage
+- Python: ruff (lint and format), pyright, pytest with 80% coverage, and an import of `backend.main` with only the `server` dependency group installed (`npm run check:server`)
 - TypeScript: ESLint, Prettier, tsc, and vitest with 80% coverage
 - Playwright end-to-end tests
+
+`npm run check` never reads `.env` and never calls a model: tests use stub models and set their own `UNDERCOVER_API_KEY`.
 
 The pre-commit hook runs the format, lint, type and unit test checks on every commit.
 

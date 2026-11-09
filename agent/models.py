@@ -4,15 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from backend.models import Recommendation
 
-class Recommendation(BaseModel):
-    """Final structured recommendation returned by the Shoppie Agent."""
-
-    outcome: Literal["approve", "decline", "request_information"]
-    rationale: str
-    policy_citations: list[str]
-    next_action: str
-    priority_human_review: bool
+__all__ = ["Recommendation", "TodoItem"]
 
 
 class TodoItem(BaseModel):

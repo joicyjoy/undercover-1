@@ -12,11 +12,11 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
+from mangum import Mangum
 from pydantic import BaseModel, Field
 
-from agent.instructions import QUEUE_INSTRUCTIONS, REQUEST_INSTRUCTIONS
-from agent.models import Recommendation
-from agent.queue import run_queue
+from backend.instructions import QUEUE_INSTRUCTIONS, REQUEST_INSTRUCTIONS
+from backend.models import Recommendation
 from backend.policies import list_policies, read_section
 from backend.refunds import (
     MAX_REFUND_LIMIT,
@@ -139,9 +139,20 @@ class TodoStatusInput(BaseModel):
     status: TodoStatus
 
 
+class RunFinishInput(BaseModel):
+    """How a run ended and the queue agent's summary."""
+
+    status: Literal["finished", "failed"]
+    summary: str
+
+
 def store_of(request: Request) -> Store:
-    """Return the app's store."""
-    return request.app.state.store
+    """Return the app's store, creating it lazily when lifespan has not run."""
+    store = getattr(request.app.state, "store", None)
+    if store is None:
+        store = Store()
+        request.app.state.store = store
+    return store
 
 
 def has_valid_agent_key(request: Request) -> bool:
@@ -182,25 +193,41 @@ def require_request(store: Store, request_id: str) -> dict[str, Any]:
     return result
 
 
-def run_in_background(store: Store, run_id: str, cap: int) -> None:
-    """Run the queue agent and store its summary, or mark the run failed."""
-    try:
-        summary = run_queue(run_id, cap)
-    except Exception as error:
-        store.finish_run(run_id, "failed", f"The run stopped: {error}")
-        return
-    store.finish_run(run_id, "finished", summary)
-
-
 def agent_service_url() -> str:
     """Return the base URL of the Shoppie Agent service."""
     return os.getenv("UNDERCOVER_AGENT", DEFAULT_AGENT_URL).rstrip("/")
 
 
-def notify_agent_resume(request_id: str) -> None:
-    """Tell the agent service to resume a signed-off request when reachable."""
+def agent_service_headers() -> dict[str, str]:
+    """Return the X-API-Key header for calls to the agent service when set."""
+    key = os.getenv("UNDERCOVER_API_KEY")
+    return {"X-API-Key": key} if key else {}
+
+
+def run_in_background(store: Store, run_id: str, cap: int) -> None:
+    """Hand a run to the agent service, or mark it failed when unreachable."""
     try:
-        httpx.post(f"{agent_service_url()}/requests/{request_id}/resume", timeout=30)
+        response = httpx.post(
+            f"{agent_service_url()}/runs/{run_id}/work",
+            json={"cap": cap},
+            headers=agent_service_headers(),
+            timeout=30,
+        )
+        response.raise_for_status()
+    except Exception as error:
+        store.finish_run(
+            run_id, "failed", f"The run stopped: the agent service failed ({error})"
+        )
+
+
+def notify_agent_resume(request_id: str) -> None:
+    """Tell the agent service to tidy a signed-off request's thread when reachable."""
+    try:
+        httpx.post(
+            f"{agent_service_url()}/requests/{request_id}/resume",
+            headers=agent_service_headers(),
+            timeout=30,
+        )
     except Exception:
         return
 
@@ -504,3 +531,20 @@ def update_run_todo(
         raise HTTPException(status_code=409, detail="Run is not running")
     store.update_todo(run_id, request_id, update.status)
     return {"run_id": run_id, "request_id": request_id, "status": update.status}
+
+
+@app.post(
+    "/api/runs/{run_id}/finish",
+    operation_id="finish_run",
+    dependencies=[Depends(require_agent_key)],
+)
+def finish_run(run_id: str, finish: RunFinishInput, request: Request) -> dict[str, str]:
+    """Close a running run with its status and the queue agent's summary."""
+    store = store_of(request)
+    if not store.is_running(run_id):
+        raise HTTPException(status_code=409, detail="Run is not running")
+    store.finish_run(run_id, finish.status, finish.summary)
+    return {"run_id": run_id, "status": finish.status}
+
+
+handler = Mangum(app, lifespan="off")

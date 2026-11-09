@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.pool import NullPool
 
 from backend import main
 from backend.main import app
@@ -140,6 +141,17 @@ def test_postgres_engine_uses_undercover_schema_and_caps_connections(
         "postgresql+psycopg://u:p@h/db"
     )
     assert sqlalchemy_postgres_url("sqlite:///test.db") == "sqlite:///test.db"
+
+    captured.clear()
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "shoppie-backend")
+    Store()
+    assert captured["poolclass"] is NullPool
+    assert "pool_size" not in captured
+    assert captured["connect_args"] == {
+        "options": f"-c search_path={SCHEMA}",
+        "prepare_threshold": None,
+    }
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME")
 
     monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(tmp_path / "seeded.sqlite3"))
     monkeypatch.setattr("backend.seed.load_dotenv", lambda **kwargs: False)
@@ -338,29 +350,65 @@ def test_support_review_hands_off_to_agent_or_decides_left_for_support(
     assert left_review.json()["status"] == "decided"
 
 
-def test_background_run_stores_the_queue_agent_summary(store, monkeypatch):
-    monkeypatch.setattr(main, "run_queue", lambda run_id, cap: f"Worked {cap}.")
+def test_background_run_is_handed_to_the_agent_service_with_the_key(store, monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    class Accepted:
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_post(url: str, **kwargs: object) -> Accepted:
+        calls.append({"url": url, **kwargs})
+        return Accepted()
+
+    monkeypatch.setenv("UNDERCOVER_API_KEY", TEST_API_KEY)
+    monkeypatch.setenv("UNDERCOVER_AGENT", "http://agent.test/")
+    monkeypatch.setattr(main.httpx, "post", fake_post)
     run_id = store.create_run(2)
     assert run_id is not None
     main.run_in_background(store, run_id, 2)
+
+    assert calls[0]["url"] == f"http://agent.test/runs/{run_id}/work"
+    assert calls[0]["json"] == {"cap": 2}
+    assert calls[0]["headers"] == AGENT_HEADERS
     run = store.current_run()
     assert run is not None
-    assert run["status"] == "finished"
-    assert run["summary"] == "Worked 2."
+    assert run["status"] == "running"
 
 
-def test_background_run_is_marked_failed_when_the_queue_agent_stops(store, monkeypatch):
-    def stop(run_id, cap):
-        raise RuntimeError("provider down")
+def test_background_run_is_marked_failed_when_the_agent_service_is_unreachable(
+    store, monkeypatch
+):
+    def unreachable(url: str, **kwargs: object):
+        raise main.httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(main, "run_queue", stop)
+    monkeypatch.setattr(main.httpx, "post", unreachable)
     run_id = store.create_run(2)
     assert run_id is not None
     main.run_in_background(store, run_id, 2)
     run = store.current_run()
     assert run is not None
     assert run["status"] == "failed"
-    assert run["summary"] == "The run stopped: provider down"
+    assert "agent service failed" in run["summary"]
+
+
+def test_finish_run_needs_the_key_and_a_running_run(client):
+    run_id = client.post("/api/runs", json={"cap": 1}).json()["run_id"]
+    payload = {"status": "finished", "summary": "Worked 1."}
+    unauthenticated = client.post(f"/api/runs/{run_id}/finish", json=payload)
+    finished = client.post(
+        f"/api/runs/{run_id}/finish", json=payload, headers=AGENT_HEADERS
+    )
+    again = client.post(
+        f"/api/runs/{run_id}/finish", json=payload, headers=AGENT_HEADERS
+    )
+    current = client.get("/api/runs/current").json()
+
+    assert unauthenticated.status_code == 401
+    assert finished.json() == {"run_id": run_id, "status": "finished"}
+    assert again.status_code == 409
+    assert current["status"] == "finished"
+    assert current["summary"] == "Worked 1."
 
 
 def test_instructions_cover_the_queue_and_a_request(client):
