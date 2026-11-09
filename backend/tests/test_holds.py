@@ -39,11 +39,21 @@ def test_hold_payment_moves_approved_request_to_waiting_for_sign_off(
     monkeypatch.setenv("UNDERCOVER_API_KEY", KEY)
     with TestClient(app) as client:
         client.post("/api/requests/REQ-7001/start", headers=HEADERS)
+        calc_res = client.post(
+            "/api/requests/REQ-7001/refund",
+            headers=HEADERS,
+            json={
+                "reason": "cancellation",
+                "lines": [{"item_id": "ITM-10001-1", "quantity": 1}],
+            },
+        )
+        payout = calc_res.json()["refund"]
         client.post(
             "/api/requests/REQ-7001/recommendation",
             headers=HEADERS,
             json={
                 "outcome": "approve",
+                "refund_amount": payout,
                 "rationale": "Eligible for refund",
                 "policy_citations": ["cancellation"],
                 "next_action": "Support agent review",

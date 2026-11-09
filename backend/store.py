@@ -2,6 +2,7 @@
 
 import json
 import os
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -10,6 +11,7 @@ from uuid import uuid4
 from sqlalchemy import (
     Column,
     Engine,
+    Float,
     ForeignKey,
     Integer,
     MetaData,
@@ -25,6 +27,8 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.pool import NullPool
+
+from backend.models import Calculation, CalculationStep
 
 DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "customer_orders.json"
 SECURITY_DATA_PATH = (
@@ -129,6 +133,21 @@ run_todos = Table(
     Column("title", Text, nullable=False),
     Column("status", Text, nullable=False),
     PrimaryKeyConstraint("run_id", "request_id"),
+)
+
+calculations = Table(
+    "calculations",
+    metadata,
+    Column(
+        "request_id",
+        Text,
+        ForeignKey("support_requests.request_id"),
+        primary_key=True,
+    ),
+    Column("attempt", Integer, nullable=False, default=0),
+    Column("lines", Text, nullable=False),
+    Column("payout", Float, nullable=False),
+    Column("calculated_at", Text, nullable=False),
 )
 
 
@@ -431,6 +450,9 @@ class Store:
                         request_steps.c.request_id == request_id
                     )
                 )
+            connection.execute(
+                delete(calculations).where(calculations.c.request_id == request_id)
+            )
             attempt = attempts + 1
             self._insert_step(
                 connection,
@@ -462,6 +484,68 @@ class Store:
                 return False
             self._insert_step(connection, request_id, stage, message)
         return True
+
+    def keep_calculation(
+        self,
+        request_id: str,
+        attempt: int,
+        lines: Sequence[Any],
+        payout: float,
+    ) -> None:
+        """Keep a request's latest calculation, replacing any before it."""
+        serialized = [
+            line.model_dump()
+            if hasattr(line, "model_dump")
+            else dict(line)
+            if isinstance(line, dict)
+            else line
+            for line in lines
+        ]
+        with self.engine.begin() as connection:
+            connection.execute(
+                delete(calculations).where(calculations.c.request_id == request_id)
+            )
+            connection.execute(
+                insert(calculations).values(
+                    request_id=request_id,
+                    attempt=attempt,
+                    lines=json.dumps(serialized),
+                    payout=payout,
+                    calculated_at=now(),
+                )
+            )
+
+    def attempts_calculation(
+        self, request_id: str, attempt: int | None = None
+    ) -> Calculation | None:
+        """Return the latest calculation on a request's attempt, if any."""
+        with self.engine.begin() as connection:
+            if attempt is None:
+                row_att = connection.execute(
+                    select(support_requests.c.attempts).where(
+                        support_requests.c.request_id == request_id
+                    )
+                ).scalar_one_or_none()
+                if row_att is None:
+                    return None
+                attempt = int(row_att) + 1
+            query = select(calculations).where(
+                calculations.c.request_id == request_id,
+                calculations.c.attempt == attempt,
+            )
+            row = connection.execute(query).mappings().first()
+            if not row:
+                return None
+            raw_lines = (
+                json.loads(row["lines"])
+                if isinstance(row["lines"], str)
+                else row["lines"]
+            )
+            steps = [
+                CalculationStep(step=line["step"], amount=float(line["amount"]))
+                for line in raw_lines
+            ]
+            return Calculation(lines=steps, payout=float(row["payout"]))
 
     def save_recommendation(
         self, request_id: str, recommendation: dict[str, Any]

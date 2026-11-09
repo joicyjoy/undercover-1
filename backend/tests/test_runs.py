@@ -232,19 +232,29 @@ def test_agent_operations_start_save_and_fail_requests(client):
     started = client.post("/api/requests/REQ-7001/start", headers=AGENT_HEADERS)
     again = client.post("/api/requests/REQ-7001/start", headers=AGENT_HEADERS)
     missing = client.post("/api/requests/REQ-0000/start", headers=AGENT_HEADERS)
+    calc = client.post(
+        "/api/requests/REQ-7001/refund",
+        json={
+            "reason": "cancellation",
+            "lines": [{"item_id": "ITM-10001-1", "quantity": 1}],
+        },
+        headers=AGENT_HEADERS,
+    )
+    payout = calc.json()["refund"]
+    rec = {**RECOMMENDATION, "refund_amount": payout}
     saved = client.post(
         "/api/requests/REQ-7001/recommendation",
-        json=RECOMMENDATION,
+        json=rec,
         headers=AGENT_HEADERS,
     )
     duplicate = client.post(
         "/api/requests/REQ-7001/recommendation",
-        json=RECOMMENDATION,
+        json=rec,
         headers=AGENT_HEADERS,
     )
     conflicting = client.post(
         "/api/requests/REQ-7001/recommendation",
-        json={**RECOMMENDATION, "outcome": "decline"},
+        json={**rec, "outcome": "decline", "refund_amount": 0.0},
         headers=AGENT_HEADERS,
     )
     client.post("/api/requests/REQ-7002/start", headers=AGENT_HEADERS)
@@ -298,9 +308,18 @@ def test_support_review_hands_off_to_agent_or_decides_left_for_support(
         "/api/requests/REQ-7002/review",
         json={"outcome": "approve", "notes": "", "reviewed_by": "Priya Nair"},
     )
+    calc = client.post(
+        "/api/requests/REQ-7001/refund",
+        json={
+            "reason": "cancellation",
+            "lines": [{"item_id": "ITM-10001-1", "quantity": 1}],
+        },
+        headers=AGENT_HEADERS,
+    )
+    payout = calc.json()["refund"]
     client.post(
         "/api/requests/REQ-7001/recommendation",
-        json=RECOMMENDATION,
+        json={**RECOMMENDATION, "refund_amount": payout},
         headers=AGENT_HEADERS,
     )
     review_payload = {

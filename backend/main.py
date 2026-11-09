@@ -16,8 +16,9 @@ from mangum import Mangum
 from pydantic import BaseModel, Field
 
 from backend.instructions import QUEUE_INSTRUCTIONS, REQUEST_INSTRUCTIONS
-from backend.models import Recommendation
+from backend.models import DecisionKind, DecisionRequest
 from backend.policies import list_policies, read_section
+from backend.records import check_calculation, check_request
 from backend.refunds import (
     MAX_REFUND_LIMIT,
     RefundCalculation,
@@ -25,7 +26,7 @@ from backend.refunds import (
     requested_refund_total,
     work_out_refund,
 )
-from backend.store import AGENT_STAGES, Store, TodoStatus
+from backend.store import AGENT_STAGES, Store, TodoStatus, now
 
 DEFAULT_DATABASE_PATH = (
     Path(__file__).resolve().parent.parent / "data" / "shoppie.sqlite3"
@@ -380,6 +381,8 @@ def calculate_refund(
         )
     if not store.is_in_progress(request_id):
         raise HTTPException(status_code=409, detail="Request is not in progress")
+    attempt = int(record.get("attempts", 0)) + 1
+    store.keep_calculation(request_id, attempt, result["calculation"], result["refund"])
     store.add_step(
         request_id,
         "calculated_refund",
@@ -409,14 +412,67 @@ def start_request(request_id: str, request: Request) -> dict[str, Any]:
     dependencies=[Depends(require_agent_key)],
 )
 def save_recommendation(
-    request_id: str, recommendation: Recommendation, request: Request
-) -> dict[str, str]:
+    request_id: str, recommendation: DecisionRequest, request: Request
+) -> dict[str, Any]:
     """Store the agent's one recommendation for support review."""
+    check_request(recommendation)
     store = store_of(request)
-    require_request(store, request_id)
-    if not store.save_recommendation(request_id, recommendation.model_dump()):
+    record = require_request(store, request_id)
+    existing = record.get("recommendation")
+    if existing is not None:
+        same_decision = (
+            existing.get("decision") == recommendation.decision.value
+            and existing.get("payout") == recommendation.payout
+        )
+        same_outcome = (
+            existing.get("outcome") == recommendation.decision.value
+            and existing.get("refund_amount") == recommendation.payout
+        )
+        if (
+            same_decision
+            or same_outcome
+            or existing.get("payout") == recommendation.payout
+        ):
+            return {
+                "request_id": request_id,
+                "status": record["status"],
+                "decision": existing,
+            }
         raise HTTPException(status_code=409, detail="Request cannot take a decision")
-    return {"request_id": request_id, "status": "waiting_for_agent_review"}
+    if not store.is_in_progress(request_id):
+        raise HTTPException(status_code=409, detail="Request is not in progress")
+    calculation = None
+    if recommendation.decision == DecisionKind.APPROVE:
+        attempt = int(record.get("attempts", 0)) + 1
+        stored_calc = store.attempts_calculation(request_id, attempt)
+        calculation = check_calculation(recommendation.payout, stored_calc)
+    extra_fields = recommendation.model_extra or {}
+    rec_dict = {
+        **extra_fields,
+        "decision": recommendation.decision.value,
+        "payout": recommendation.payout,
+        "calculation": calculation.model_dump() if calculation else None,
+        "section": recommendation.section,
+        "reason": recommendation.reason,
+        "decided_by": recommendation.decided_by,
+        "decided_at": now(),
+        "manual_version": "2026.2",
+        "outcome": extra_fields.get("outcome", recommendation.decision.value),
+        "rationale": extra_fields.get("rationale", recommendation.reason),
+        "policy_citations": extra_fields.get(
+            "policy_citations", [recommendation.section]
+        ),
+        "refund_amount": recommendation.payout,
+        "next_action": extra_fields.get("next_action", "Support agent review"),
+        "priority_human_review": extra_fields.get("priority_human_review", False),
+    }
+    if not store.save_recommendation(request_id, rec_dict):
+        raise HTTPException(status_code=409, detail="Request cannot take a decision")
+    return {
+        "request_id": request_id,
+        "status": "waiting_for_agent_review",
+        "decision": rec_dict,
+    }
 
 
 @app.post(

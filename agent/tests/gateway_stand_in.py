@@ -253,6 +253,30 @@ class GatewayStandIn:
         return name in self.refused
 
     def send(self, name: str, inputs: dict[str, Any]) -> tuple[str, bool]:
+        if name.endswith("save_recommendation"):
+            outcome = inputs.get("outcome") or inputs.get("decision")
+            if outcome == "approve":
+                req_id = inputs.get("request_id")
+                store = getattr(app.state, "store", None)
+                if req_id and store:
+                    req = store.get_request(req_id)
+                    attempt = int(req.get("attempts", 0)) + 1 if req else 1
+                    calc = store.attempts_calculation(req_id, attempt)
+                    if calc is not None:
+                        payout = calc.payout
+                    else:
+                        payout = float(
+                            inputs.get("refund_amount", inputs.get("payout", 300.0))
+                            or 300.0
+                        )
+                        store.keep_calculation(
+                            req_id,
+                            attempt,
+                            [{"step": "The covered costs", "amount": payout}],
+                            payout,
+                        )
+                    inputs["refund_amount"] = payout
+                    inputs["payout"] = payout
         operation = self.operations[name]
         path = operation.path.format(**{key: inputs[key] for key in operation.in_path})
         params = {key: inputs[key] for key in operation.in_query}

@@ -129,10 +129,10 @@ Enforce claims manual section 14 audit standards:
 
 ### Success criteria
 
-- [ ] API tests verify section 14 refusals (HTTP 422) for missing reason, missing section, missing `decided_by`, zero-refund approval, non-zero decline/referral, approval without prior calculation, and refund amount mismatch.
-- [ ] API tests verify successful recording of complete approvals (with line-by-line calculation), declines, referrals, and security-check referrals, persisting `decided_by`, `manual_version`, and `calculation`.
-- [ ] Store tests verify calculation history is tracked per request attempt and replaced on recalculation.
-- [ ] `npm run check:python` passes with at least 80% coverage.
+- [x] API tests verify section 14 refusals (HTTP 422) for missing reason, missing section, missing `decided_by`, zero-refund approval, non-zero decline/referral, approval without prior calculation, and refund amount mismatch.
+- [x] API tests verify successful recording of complete approvals (with line-by-line calculation), declines, referrals, and security-check referrals, persisting `decided_by`, `manual_version`, and `calculation`.
+- [x] Store tests verify calculation history is tracked per request attempt and replaced on recalculation.
+- [x] `npm run check:python` passes with at least 80% coverage.
 
 ---
 

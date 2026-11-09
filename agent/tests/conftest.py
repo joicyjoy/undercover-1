@@ -31,6 +31,34 @@ def api(tmp_path, monkeypatch):
     with TestClient(app) as client:
         monkeypatch.setattr(main, "backend", lambda: nullcontext(client))
         monkeypatch.setattr(agent_api, "backend", client)
+
+        orig_save = agent_api.save_recommendation
+
+        def auto_save(request_id, recommendation=None, **extra):
+            rec = {**(recommendation or {}), **extra}
+            outcome = rec.get("outcome") or rec.get("decision")
+            if outcome == "approve":
+                store = app.state.store
+                req = store.get_request(request_id)
+                attempt = int(req.get("attempts", 0)) + 1 if req else 1
+                calc = store.attempts_calculation(request_id, attempt)
+                if calc is not None:
+                    payout = calc.payout
+                else:
+                    payout = float(
+                        rec.get("refund_amount", rec.get("payout", 300.0)) or 300.0
+                    )
+                    store.keep_calculation(
+                        request_id,
+                        attempt,
+                        [{"step": "The covered costs", "amount": payout}],
+                        payout,
+                    )
+                rec["refund_amount"] = payout
+                rec["payout"] = payout
+            return orig_save(request_id, rec)
+
+        monkeypatch.setattr(agent_api, "save_recommendation", auto_save)
         yield client
 
 

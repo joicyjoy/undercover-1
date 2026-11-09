@@ -219,16 +219,15 @@ def test_screen_holds_request_with_hidden_instructions_without_calling_agent_mod
         "security_check",
         "preparing_recommendation",
     ]
-    assert request["recommendation"] == {
-        "outcome": "request_information",
-        "rationale": reason,
-        "policy_citations": ["Security check"],
-        "next_action": (
-            "Hold for a support agent because the security check found "
-            "instructions in the request."
-        ),
-        "priority_human_review": True,
-    }
+    rec = request["recommendation"]
+    assert rec["outcome"] == "request_information"
+    assert rec["rationale"] == reason
+    assert rec["policy_citations"] == ["Security check"]
+    assert rec["next_action"] == (
+        "Hold for a support agent because the security check found "
+        "instructions in the request."
+    )
+    assert rec["priority_human_review"] is True
 
 
 def test_screen_retries_unreadable_output_and_fails_before_agent_after_three_attempts(
