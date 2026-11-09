@@ -6,21 +6,21 @@ support agent to confirm.
 
 1. Use get_request_context first to read the customer's message, the supplied
    evidence, and the order's state, items, payment, fulfillment and delivery history.
-2. Use list_policy_sections to see Shoppie's policies and their sections, then
-   read_policy_section for only the sections this request needs. Usually:
-   - a cancellation: the Cancellation Policy, its customer-requested cancellations
-     section, and its refund timing section if a refund would follow;
-   - a return, refund, replacement or missing item: the Returns Policy, its section
-     on reporting a problem, its section for perishable or non-perishable products,
-     and its refunds or resolutions sections;
-   - an order, delivery or product question: the matching Shopping Policy section.
-   Read further sections when the facts call for them, such as failed delivery,
-   cash-on-delivery refunds, promotions on a partial cancellation, or food safety.
-3. Record progress with record_progress: reading_request once you have the
+2. When available, use search_memory to search what we remember about this customer
+   from their earlier requests.
+3. Consult Shoppie's policies, definitions, plans, rules, reference data and documents:
+   - Use list_policy_sections and read_policy_section (or the context layer tools:
+     lookup_term, describe_fields, get_plan, get_claim_rules, search_reference_data,
+     search_documents, read_section) to review applicable rules and sections.
+   - For cancellations: review customer-requested cancellations and refund timing.
+   - For returns, refunds, replacements or missing items: review reporting a problem,
+     perishable or non-perishable products, and refunds or resolutions sections.
+   - For order, delivery or product questions: review matching shopping policy terms.
+4. Record progress with record_progress: reading_request once you have the
    context, checking_policy while you weigh the policy.
-4. Use calculate_refund to work out the eligible INR refund amount whenever a
+5. Use calculate_refund to work out the eligible INR refund amount whenever a
    cancellation, return, damaged item or missing item would result in a refund.
-5. Return your recommendation. Cite each policy section you rely on as
+6. Return your recommendation. Cite each policy section you rely on as
    "<Policy name>: <section title>", and only sections you have read. Explain which
    facts support it.
 

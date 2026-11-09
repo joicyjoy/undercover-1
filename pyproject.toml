@@ -16,6 +16,7 @@ dependencies = [
     "langchain-mcp-adapters>=0.3.2",
     "langchain-openai>=1.6.2",
     "langfuse>=4.16.0",
+    "langgraph-checkpoint-aws>=1.2.4",
     "langgraph-checkpoint-postgres>=3.1.2",
     "mangum>=0.22.0",
     "mcp>=1.30.0",
@@ -60,6 +61,7 @@ runtime = [
     "langchain>=1.4.2",
     "langchain-openai>=1.6.2",
     "langfuse>=4.16.0",
+    "langgraph-checkpoint-aws>=1.2.4",
     "langgraph-checkpoint-postgres>=3.1.2",
     "python-dotenv>=1.2.3",
 ]

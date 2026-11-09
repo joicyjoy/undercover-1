@@ -1,6 +1,8 @@
 """The Shoppie Agent's request agent: works one support request as a LangGraph graph."""
 
+import contextlib
 import json
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -15,6 +17,7 @@ from langchain.agents.middleware import ModelRetryMiddleware, ToolRetryMiddlewar
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import ToolException
 from langchain_openai import ChatOpenAI
 from langfuse import propagate_attributes
 from langfuse.langchain import CallbackHandler
@@ -24,11 +27,13 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
+from langgraph.store.base import BaseStore
 from langgraph.types import Command, interrupt
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field, SecretStr
 
-from agent import direct
+from agent import api, direct, memory
+from agent.api import Refused
 from agent.gateway import Gateway
 from agent.instructions import REQUEST_INSTRUCTIONS
 from agent.models import Recommendation
@@ -37,6 +42,8 @@ from agent.safety import apply_context_overrides, contains_unsupported_execution
 from agent.tools import make_request_tools as build_tools
 
 load_dotenv(override=True)
+
+logger = logging.getLogger(__name__)
 
 BACKEND_URL = "http://localhost:8000"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -47,6 +54,7 @@ MAX_MODEL_CALLS = 30
 MAX_SCREEN_ATTEMPTS = 3
 MAX_RETRIES = 2
 RETRY_DELAY = 1.0
+REMEMBER = "remember"
 ProgressStage = Literal["security_check", "reading_request", "checking_policy"]
 WorkStatus = Literal["done", "waiting", "left_for_support", "skipped"]
 
@@ -265,9 +273,21 @@ def get_route() -> Route:
     return direct.from_environment()
 
 
-def make_request_tools(request_id: str, route: Route | None = None) -> list[Any]:
+def make_request_tools(
+    request_id: str,
+    route: Route | None = None,
+    store: BaseStore | None = None,
+    customer_id: str | None = None,
+) -> list[Any]:
     """Create the backend API tools for working one support request on a given route."""
-    return list(build_tools(request_id, route or get_route()))
+    return list(
+        build_tools(
+            request_id,
+            route or get_route(),
+            store=store,
+            customer_id=customer_id,
+        )
+    )
 
 
 def extract_request_context(messages: list[Any]) -> dict[str, Any] | None:
@@ -403,23 +423,93 @@ def run_complete_node(
     return {"review": payload}
 
 
+def refusal(error: Exception) -> str:
+    """Show the model why a tool was refused, by the app, the Gateway or the tool's
+    own checks, and let any other error stop the agent."""
+    if isinstance(error, Refused):
+        return f"Refused with status {error.status_code}: {error.detail}"
+    if isinstance(error, GatewayRefused):
+        return error.answer
+    if isinstance(error, ToolException):
+        return f"Refused: {error}"
+    raise error
+
+
+def run_decide_node(
+    state: RequestState,
+    llm: BaseChatModel | None,
+    active_route: Route,
+) -> dict[str, Any]:
+    """Turn the agent's work into a structured recommendation and save it."""
+    context = extract_request_context(state["messages"])
+    if context is None:
+        raise ValueError("The agent did not retrieve request context")
+    decider = (llm or model()).with_structured_output(Recommendation)
+    structured = call_with_retry(
+        decider.invoke,
+        [
+            SystemMessage(REQUEST_INSTRUCTIONS),
+            *state["messages"],
+            HumanMessage("Record your recommendation on this support request."),
+        ],
+    )
+    if not isinstance(structured, Recommendation):
+        raise TypeError("The Shoppie Agent returned an invalid recommendation")
+    if contains_unsupported_execution_claim(structured):
+        raise ValueError("The recommendation claims an unconfirmed customer action")
+    structured = apply_context_overrides(context, structured)
+    recommendation = structured.model_dump()
+    active_route.call(
+        Target.APP,
+        "save_recommendation",
+        {"request_id": state["request_id"], **recommendation},
+    )
+    return {"recommendation": recommendation}
+
+
+def run_remember_node(state: RequestState, store: BaseStore) -> dict[str, Any]:
+    """Save the decided request into customer memory."""
+    try:
+        req = api.get_request(state["request_id"])
+    except Exception as err:
+        logger.warning(f"{state['request_id']}  Could not get request: {err}")
+        return {}
+
+    rec = req.get("recommendation") or state.get("recommendation") or {}
+    citations = rec.get("policy_citations") or []
+    decided_by = rec.get("decided_by") or ""
+    if "Security check" in citations or decided_by == "Security check":
+        return {}
+    if req.get("copy_of") or req.get("evaluation_id"):
+        return {}
+
+    try:
+        saved = memory.remember(store, req)
+        with contextlib.suppress(Exception):
+            api.record_step(state["request_id"], "memory_save", saved)
+    except memory.UNREACHABLE as error:
+        logger.warning(f"{state['request_id']}  {error.__class__.__name__}: {error}")
+    return {}
+
+
 def build_request_graph(
     request_id: str,
     llm: BaseChatModel | None = None,
+    *,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     route: Route | None = None,
+    store: BaseStore | None = None,
 ) -> Any:
     """Build and compile the synchronous StateGraph for one support request."""
     active_route = route or get_route()
-    tools = make_request_tools(request_id, active_route)
+    active_store = store if store is not None else memory.memory_store()
+    tools = make_request_tools(request_id, active_route, store=active_store)
     system_message = SystemMessage(REQUEST_INSTRUCTIONS)
 
     def screen(state: RequestState) -> dict[str, Any]:
-        """Run the security check node on the current request."""
         return run_screen_node(state)
 
     def agent(state: RequestState) -> dict[str, Any]:
-        """Call the model with the conversation so far."""
         ai_calls = sum(1 for msg in state["messages"] if isinstance(msg, AIMessage))
         if ai_calls >= MAX_MODEL_CALLS:
             raise RuntimeError(
@@ -432,31 +522,7 @@ def build_request_graph(
         return {"messages": [reply]}
 
     def decide(state: RequestState) -> dict[str, Any]:
-        """Turn the agent's work into a structured recommendation and save it."""
-        context = extract_request_context(state["messages"])
-        if context is None:
-            raise ValueError("The agent did not retrieve request context")
-        decider = (llm or model()).with_structured_output(Recommendation)
-        structured = call_with_retry(
-            decider.invoke,
-            [
-                system_message,
-                *state["messages"],
-                HumanMessage("Record your recommendation on this support request."),
-            ],
-        )
-        if not isinstance(structured, Recommendation):
-            raise TypeError("The Shoppie Agent returned an invalid recommendation")
-        if contains_unsupported_execution_claim(structured):
-            raise ValueError("The recommendation claims an unconfirmed customer action")
-        structured = apply_context_overrides(context, structured)
-        recommendation = structured.model_dump()
-        active_route.call(
-            Target.APP,
-            "save_recommendation",
-            {"request_id": state["request_id"], **recommendation},
-        )
-        return {"recommendation": recommendation}
+        return run_decide_node(state, llm, active_route)
 
     def complete(state: RequestState) -> dict[str, Any]:
         return run_complete_node(state, active_route)
@@ -464,7 +530,7 @@ def build_request_graph(
     builder = StateGraph(RequestState)
     builder.add_node("screen", screen)
     builder.add_node("agent", agent)
-    builder.add_node("tools", ToolNode(tools))
+    builder.add_node("tools", ToolNode(tools, handle_tool_errors=refusal))
     builder.add_node("decide", decide)
     builder.add_node("approval", run_approval_node)
     builder.add_node("complete", complete)
@@ -475,22 +541,37 @@ def build_request_graph(
     )
     builder.add_conditional_edges("agent", after_agent, ["tools", "decide"])
     builder.add_edge("tools", "agent")
-    builder.add_conditional_edges("decide", after_decide, ["approval", "complete"])
+
+    if active_store is not None:
+
+        def remember_node(state: RequestState) -> dict[str, Any]:
+            return run_remember_node(state, active_store)
+
+        builder.add_node(REMEMBER, remember_node)
+        builder.add_edge("decide", REMEMBER)
+        builder.add_conditional_edges(REMEMBER, after_decide, ["approval", "complete"])
+    else:
+        builder.add_conditional_edges("decide", after_decide, ["approval", "complete"])
+
     builder.add_edge("approval", "complete")
     builder.add_edge("complete", END)
 
-    return builder.compile(checkpointer=checkpointer or get_checkpointer())
+    return builder.compile(
+        checkpointer=checkpointer or get_checkpointer(),
+        store=active_store,
+    )
 
 
 def run_request(
     request_id: str,
     thread_id: str,
     llm: BaseChatModel | None = None,
-    attempt: int = 1,
+    *,
     route: Route | None = None,
+    store: BaseStore | None = None,
 ) -> dict[str, Any]:
     """Run or resume the request graph until it pauses at approval."""
-    graph = build_request_graph(request_id, llm, route=route)
+    graph = build_request_graph(request_id, llm, route=route, store=store)
     context_manager, config = trace_context(request_id, thread_id)
     state = graph.get_state(config)
     if state.values and state.next and state.next != ("approval",):
@@ -499,6 +580,11 @@ def run_request(
         return result["recommendation"]
     if state.values and state.values.get("recommendation"):
         return state.values["recommendation"]
+    attempt = (
+        int(thread_id.rsplit("-attempt-", maxsplit=1)[-1])
+        if "-attempt-" in thread_id
+        else 1
+    )
     initial_state: RequestState = {
         "messages": [HumanMessage("Review the assigned support request.")],
         "request_id": request_id,
@@ -575,6 +661,7 @@ def work_request(
     request_id: str,
     llm: BaseChatModel | None = None,
     route: Route | None = None,
+    store: BaseStore | None = None,
 ) -> WorkResult:
     """Work one waiting or interrupted request and report back in a line."""
     response = backend_post(f"/api/requests/{request_id}/start")
@@ -602,8 +689,8 @@ def work_request(
             request_id,
             thread_id,
             llm,
-            attempt=attempt,
             route=route,
+            store=store,
         )
     except Exception as error:
         get_checkpointer().delete_thread(thread_id)

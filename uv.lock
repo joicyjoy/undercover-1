@@ -1512,6 +1512,20 @@ wheels = [
 ]
 
 [[package]]
+name = "langgraph-checkpoint-aws"
+version = "1.2.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "boto3" },
+    { name = "langgraph" },
+    { name = "langgraph-checkpoint" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fb/3c/ce4a34f1aa26fed623576b75529b878881410f83abeda639c16e8c8db713/langgraph_checkpoint_aws-1.2.7.tar.gz", hash = "sha256:d46cbf1541c49fe0f5e06b8b281b8ad4a3d5df5c0e5d05d1ee4f5c5ac9f1c63e", size = 371137, upload-time = "2026-11-06T00:23:08.538Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0c/ce/fa7f413fbece727470ad0a919c4dfdbd18fcfb191137e978fefe97acd58c/langgraph_checkpoint_aws-1.2.7-py3-none-any.whl", hash = "sha256:8f348a0be4076cd55b12db8f9baf8f5cc3cc3d11cb06c3186eb7d0d149e40063", size = 192663, upload-time = "2026-11-06T00:23:07.214Z" },
+]
+
+[[package]]
 name = "langgraph-checkpoint-postgres"
 version = "3.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3147,6 +3161,7 @@ dependencies = [
     { name = "langchain-mcp-adapters" },
     { name = "langchain-openai" },
     { name = "langfuse" },
+    { name = "langgraph-checkpoint-aws" },
     { name = "langgraph-checkpoint-postgres" },
     { name = "mangum" },
     { name = "mcp" },
@@ -3180,6 +3195,7 @@ runtime = [
     { name = "langchain" },
     { name = "langchain-openai" },
     { name = "langfuse" },
+    { name = "langgraph-checkpoint-aws" },
     { name = "langgraph-checkpoint-postgres" },
     { name = "python-dotenv" },
 ]
@@ -3210,6 +3226,7 @@ requires-dist = [
     { name = "langchain-mcp-adapters", specifier = ">=0.3.2" },
     { name = "langchain-openai", specifier = ">=1.6.2" },
     { name = "langfuse", specifier = ">=4.16.0" },
+    { name = "langgraph-checkpoint-aws", specifier = ">=1.2.4" },
     { name = "langgraph-checkpoint-postgres", specifier = ">=3.1.2" },
     { name = "mangum", specifier = ">=0.22.0" },
     { name = "mcp", specifier = ">=1.30.0" },
@@ -3243,6 +3260,7 @@ runtime = [
     { name = "langchain", specifier = ">=1.4.2" },
     { name = "langchain-openai", specifier = ">=1.6.2" },
     { name = "langfuse", specifier = ">=4.16.0" },
+    { name = "langgraph-checkpoint-aws", specifier = ">=1.2.4" },
     { name = "langgraph-checkpoint-postgres", specifier = ">=3.1.2" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
 ]

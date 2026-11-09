@@ -8,8 +8,9 @@ from http import HTTPStatus
 from typing import Any
 
 from langchain_core.tools import BaseTool, ToolException, tool
+from langgraph.store.base import BaseStore
 
-from agent import api
+from agent import api, memory
 from agent.api import Refused
 from agent.routes import GatewayRefused, Route, Target
 from backend.refunds import Line, RefundReason
@@ -68,7 +69,45 @@ def call_on_route(
         return f"Refused: {error}"
 
 
-def make_request_tools(request_id: str, route: Route) -> list[BaseTool]:
+def _build_memory_tool(
+    request_id: str, store: BaseStore, customer_id: str | None
+) -> BaseTool:
+    @tool
+    def search_memory(query: str) -> str:
+        """Search what we remember about this customer from earlier requests."""
+        cid = customer_id
+        if not cid:
+            try:
+                req_data = api.get_request(request_id)
+                cid = req_data.get("customer_id") or req_data.get("customer", {}).get(
+                    "customer_id", ""
+                )
+            except Exception:
+                cid = ""
+        try:
+            found = memory.recall(store, cid, request_id, query)
+        except memory.UNREACHABLE as error:
+            with contextlib.suppress(Exception):
+                api.record_step(
+                    request_id,
+                    "refusal",
+                    f"Refused: The memory can't be reached. {error}",
+                )
+            raise ToolException(f"The memory can't be reached. {error}") from error
+        msg = memory.what_was_found(query, found)
+        with contextlib.suppress(Exception):
+            api.record_step(request_id, "memory_search", msg)
+        return json.dumps(found)
+
+    return search_memory
+
+
+def make_request_tools(
+    request_id: str,
+    route: Route,
+    store: BaseStore | None = None,
+    customer_id: str | None = None,
+) -> list[BaseTool]:
     """Create the backend API tools for working one support request on a given route."""
 
     @tool
@@ -125,10 +164,15 @@ def make_request_tools(request_id: str, route: Route) -> list[BaseTool]:
             {"request_id": request_id, "stage": stage},
         )
 
-    return [
+    tools: list[BaseTool] = [
         get_request_context,
         list_policy_sections,
         read_policy_section,
         calculate_refund,
         record_progress,
     ]
+
+    if store is not None:
+        tools.append(_build_memory_tool(request_id, store, customer_id))
+
+    return tools

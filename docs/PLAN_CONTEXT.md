@@ -150,12 +150,12 @@ Add customer memory integration using AgentCore Memory:
 
 ### Success criteria
 
-- [ ] Unit tests with a stand-in memory store verify two events are saved after a decision.
-- [ ] Unit tests verify no events are saved for security-flagged requests or evaluation runs.
-- [ ] Unit tests verify `recall` searches only within the customer's namespace and excludes the current request's session summary.
-- [ ] Unit tests verify graceful error handling when AgentCore Memory is unreachable.
-- [ ] Unit tests verify `search_memory` is omitted when `UNDERCOVER_MEMORY_ID` is unset.
-- [ ] `npm run check:python` passes with at least 80% coverage.
+- [x] Unit tests with a stand-in memory store verify two events are saved after a decision.
+- [x] Unit tests verify no events are saved for security-flagged requests or evaluation runs.
+- [x] Unit tests verify `recall` searches only within the customer's namespace and excludes the current request's session summary.
+- [x] Unit tests verify graceful error handling when AgentCore Memory is unreachable.
+- [x] Unit tests verify `search_memory` is omitted when `UNDERCOVER_MEMORY_ID` is unset.
+- [x] `npm run check:python` passes with at least 80% coverage.
 
 ---
 
