@@ -22,7 +22,9 @@ def test_seed_is_idempotent(tmp_path):
     store = Store(tmp_path / "seed.sqlite3")
     store.initialize()
     store.initialize()
-    assert len(store.list_requests()) == 8
+    requests = store.list_requests()
+    assert len(requests) == 9
+    assert "REQ-7901" in {item["request_id"] for item in requests}
 
 
 def test_seed_refreshes_request_and_order_records_in_an_existing_database(tmp_path):
@@ -67,7 +69,7 @@ def test_final_runtime_queue_has_no_reference_decision_route(tmp_path, monkeypat
         queue = client.get("/api/requests")
         references = client.get("/api/evals/support_decisions.json")
 
-    assert len(queue.json()) == 8
+    assert len(queue.json()) == 9
     assert references.status_code == 404
     api_routes = [route for route in app.routes if isinstance(route, APIRoute)]
     assert all("eval" not in route.path.casefold() for route in api_routes)
@@ -81,7 +83,7 @@ def test_request_queue_and_safe_detail(tmp_path, monkeypatch):
         missing = client.get("/api/requests/REQ-0000")
 
     assert queue.status_code == 200
-    assert len(queue.json()) == 8
+    assert len(queue.json()) == 9
     assert {item["status"] for item in queue.json()} == {"waiting"}
     assert detail.status_code == 200
     request = detail.json()["request"]

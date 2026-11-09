@@ -62,11 +62,11 @@ Add the prompt-injection screening guardrail in the style of `labs/week3day2_lab
 
 ### Success criteria
 
-- [ ] Stub-model tests verify a request flagged by `screen` is held for support review with the check's reason and `"Security check"` citation, records the `security_check` step, and makes zero calls to the main request agent model.
-- [ ] Stub-model tests verify a request that passes `screen` proceeds to `agent` and records its normal recommendation.
-- [ ] Stub-model tests verify a screening check that fails or returns unreadable output across 3 attempts fails the attempt without calling the main request agent model, and that resuming from a mid-flight checkpoint after `screen` does not re-run `screen`.
-- [ ] Store and API tests verify `REQ-7901` is seeded into the queue from `data/security/customer_orders.json` (9 requests total) while `data/customer_orders.json` and `data/evals/` are unchanged.
-- [ ] `npm run check:python` passes with at least 80% coverage.
+- [x] Stub-model tests verify a request flagged by `screen` is held for support review with the check's reason and `"Security check"` citation, records the `security_check` step, and makes zero calls to the main request agent model.
+- [x] Stub-model tests verify a request that passes `screen` proceeds to `agent` and records its normal recommendation.
+- [x] Stub-model tests verify a screening check that fails or returns unreadable output across 3 attempts fails the attempt without calling the main request agent model, and that resuming from a mid-flight checkpoint after `screen` does not re-run `screen`.
+- [x] Store and API tests verify `REQ-7901` is seeded into the queue from `data/security/customer_orders.json` (9 requests total) while `data/customer_orders.json` and `data/evals/` are unchanged.
+- [x] `npm run check:python` passes with at least 80% coverage.
 
 ---
 

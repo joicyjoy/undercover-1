@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agent import main
+from agent.tests.stubs import screening_stub
 from backend.main import app
 from backend.store import Store
 
@@ -15,6 +16,7 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setenv("UNDERCOVER_API_KEY", "test-agent-secret-key-0123456789abcdef")
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.setattr(main, "screening_model", screening_stub)
     with TestClient(app) as client:
         monkeypatch.setattr(main, "backend", lambda: nullcontext(client))
         yield client

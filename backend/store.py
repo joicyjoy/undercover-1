@@ -26,6 +26,12 @@ from sqlalchemy import (
 )
 
 DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "customer_orders.json"
+SECURITY_DATA_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "data"
+    / "security"
+    / "customer_orders.json"
+)
 DEFAULT_DATABASE_PATH = (
     Path(__file__).resolve().parent.parent / "data" / "shoppie.sqlite3"
 )
@@ -35,6 +41,9 @@ MAX_OVERFLOW = 2
 MAX_ATTEMPTS = 2
 STEP_MESSAGES = {
     "started": "The Shoppie Agent started reviewing this request.",
+    "security_check": (
+        "The security check screened the customer request for hidden instructions."
+    ),
     "reading_request": "The agent retrieved the customer request and order details.",
     "checking_policy": "The agent checked the applicable Shoppie policy.",
     "calculated_refund": "The agent calculated the eligible refund amount.",
@@ -49,7 +58,7 @@ STEP_MESSAGES = {
         "support review is needed."
     ),
 }
-AGENT_STAGES = {"reading_request", "checking_policy"}
+AGENT_STAGES = {"security_check", "reading_request", "checking_policy"}
 TodoStatus = Literal["to_do", "in_progress", "done", "left_for_support"]
 FailureResult = Literal["waiting", "left_for_support"]
 
@@ -164,13 +173,17 @@ class Store:
 
     def initialize(self) -> None:
         """Create the tables, seed source records once and recover stopped work."""
-        source = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+        customers = list(json.loads(DATA_PATH.read_text(encoding="utf-8"))["customers"])
+        if SECURITY_DATA_PATH.is_file():
+            customers.extend(
+                json.loads(SECURITY_DATA_PATH.read_text(encoding="utf-8"))["customers"]
+            )
         if self.is_postgres:
             with self.engine.begin() as connection:
                 connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
         metadata.create_all(self.engine)
         with self.engine.begin() as connection:
-            for customer in source["customers"]:
+            for customer in customers:
                 for order in customer["orders"]:
                     safe_order = self.safe_order(order)
                     for request in order["requests"]:

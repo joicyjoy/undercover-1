@@ -75,3 +75,19 @@ def request_replies(
 
 def scripted_model(**kwargs: Any) -> StubModel:
     return StubModel(messages=iter(request_replies(**kwargs)))
+
+
+def screening_stub(
+    instructions_found: bool = False,
+    reason: str = "Normal customer support request with no hidden instructions.",
+) -> StubModel:
+    return StubModel(
+        messages=iter(
+            [
+                call(
+                    "Screening",
+                    {"reason": reason, "instructions_found": instructions_found},
+                )
+            ]
+        )
+    )

@@ -77,7 +77,7 @@ def test_a_capped_run_plans_works_its_cap_and_leaves_the_rest_waiting(store):
     queue = statuses(store)
     assert queue["REQ-7007"] == "waiting_for_agent_review"
     assert queue["REQ-7002"] == "waiting_for_agent_review"
-    assert list(queue.values()).count("waiting") == 6
+    assert list(queue.values()).count("waiting") == 7
     assert todo_statuses(store) == {"REQ-7007": "done", "REQ-7002": "done"}
     assert store.get_request("REQ-7006")["steps"] == []
 
@@ -136,7 +136,7 @@ def test_the_agent_is_sent_back_when_it_misses_a_waiting_request(store):
 
     assert summary == "Both requests are ready for review."
     assert statuses(store)["REQ-7002"] == "waiting_for_agent_review"
-    assert list(statuses(store).values()).count("waiting") == 6
+    assert list(statuses(store).values()).count("waiting") == 7
 
 
 def test_a_run_that_keeps_missing_requests_fails(store):

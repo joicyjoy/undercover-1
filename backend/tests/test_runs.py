@@ -109,7 +109,7 @@ def test_reseed_rebuilds_every_request_as_waiting(store):
     store.create_run(2)
     store.reseed()
     assert {item["status"] for item in store.list_requests()} == {"waiting"}
-    assert len(store.list_requests()) == 8
+    assert len(store.list_requests()) == 9
     assert store.current_run() is None
 
 
@@ -209,7 +209,7 @@ def test_a_run_needs_a_cap_of_at_least_one(client):
 def test_waiting_requests_hold_no_customer_or_order_fields(client):
     client.post("/api/requests/REQ-7001/start", headers=AGENT_HEADERS)
     waiting = client.get("/api/requests/waiting", headers=AGENT_HEADERS).json()
-    assert len(waiting) == 7
+    assert len(waiting) == 8
     assert "REQ-7001" not in {item["request_id"] for item in waiting}
     assert set(waiting[0]) == {"request_id", "type", "created_at"}
 
