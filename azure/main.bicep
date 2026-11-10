@@ -3,6 +3,9 @@ targetScope = 'resourceGroup'
 @description('Azure region for all resources')
 param location string = resourceGroup().location
 
+@description('Azure region for PostgreSQL Flexible Server (override if location restricts Postgres)')
+param postgresLocation string = location
+
 @description('Short lowercase alphanumeric prefix for Azure resource names')
 @minLength(3)
 @maxLength(12)
@@ -101,7 +104,7 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
 
 resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview' = {
   name: pgName
-  location: location
+  location: postgresLocation
   sku: {
     name: 'Standard_B1ms'
     tier: 'Burstable'

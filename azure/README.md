@@ -17,13 +17,16 @@ First create a resource group, provision the shared infrastructure (`deployApps=
 
 **macOS / Linux (zsh/bash):**
 
+> Note: Some Azure subscriptions restrict new PostgreSQL Flexible Server deployments in `eastus` / `westus2`. Use a supported region such as `centralus`, `centralindia`, or `southeastasia` (or pass `postgresLocation=centralus` if your resource group is in `eastus`).
+
 ```sh
 RG="shoppie-rg"
-LOC="eastus"
+LOC="centralus"
 az group create -n "$RG" -l "$LOC"
 
 az deployment group create -g "$RG" -f azure/main.bicep \
   -p deployApps=false \
+     postgresLocation="centralus" \
      postgresAdminPassword="<STRONG_PG_PASSWORD>" \
      openrouterApiKey="$OPENROUTER_API_KEY" \
      undercoverApiKey="$UNDERCOVER_API_KEY" \
@@ -36,6 +39,7 @@ az acr build -r "$ACR" -f azure/Dockerfile.context -t shoppie-context:latest .
 
 az deployment group create -g "$RG" -f azure/main.bicep \
   -p deployApps=true \
+     postgresLocation="centralus" \
      postgresAdminPassword="<STRONG_PG_PASSWORD>" \
      openrouterApiKey="$OPENROUTER_API_KEY" \
      undercoverApiKey="$UNDERCOVER_API_KEY" \
@@ -46,11 +50,12 @@ az deployment group create -g "$RG" -f azure/main.bicep \
 
 ```powershell
 $RG = "shoppie-rg"
-$LOC = "eastus"
+$LOC = "centralus"
 az group create -n $RG -l $LOC
 
 az deployment group create -g $RG -f azure/main.bicep `
   -p deployApps=false `
+     postgresLocation="centralus" `
      postgresAdminPassword="<STRONG_PG_PASSWORD>" `
      openrouterApiKey="$env:OPENROUTER_API_KEY" `
      undercoverApiKey="$env:UNDERCOVER_API_KEY" `
@@ -63,6 +68,7 @@ az acr build -r $ACR -f azure/Dockerfile.context -t shoppie-context:latest .
 
 az deployment group create -g $RG -f azure/main.bicep `
   -p deployApps=true `
+     postgresLocation="centralus" `
      postgresAdminPassword="<STRONG_PG_PASSWORD>" `
      openrouterApiKey="$env:OPENROUTER_API_KEY" `
      undercoverApiKey="$env:UNDERCOVER_API_KEY" `
