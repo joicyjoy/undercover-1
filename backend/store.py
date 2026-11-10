@@ -622,6 +622,7 @@ class Store:
                 .where(support_requests.c.request_id == request_id)
                 .values(
                     recommendation_json=json.dumps(rec),
+                    review_json=None,
                     queue_status="waiting_for_agent_review",
                 )
             )
@@ -678,20 +679,27 @@ class Store:
                 return None
             existing = self.decode(row["review_json"])
             if existing is not None:
-                if self._reviews_match(existing, review):
+                if row["queue_status"] == "decided" and self._reviews_match(
+                    existing, review
+                ):
                     return str(row["queue_status"])
                 return None
             if row["queue_status"] != "waiting_for_agent_review":
                 return None
             has_recommendation = row["recommendation_json"] is not None
-            connection.execute(
+            result = connection.execute(
                 update(support_requests)
-                .where(support_requests.c.request_id == request_id)
+                .where(
+                    support_requests.c.request_id == request_id,
+                    support_requests.c.queue_status == "waiting_for_agent_review",
+                )
                 .values(
                     review_json=json.dumps(review),
                     queue_status="decided",
                 )
             )
+            if result.rowcount != 1:
+                return None
             self._insert_step(
                 connection,
                 request_id,

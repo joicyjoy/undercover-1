@@ -304,6 +304,11 @@ def test_support_review_hands_off_to_agent_or_decides_left_for_support(
     monkeypatch.setattr(main, "notify_agent_resume", resumed.append)
 
     client.post("/api/requests/REQ-7001/start", headers=AGENT_HEADERS)
+    while_working = client.post(
+        "/api/requests/REQ-7001/review",
+        json={"outcome": "approve", "notes": "", "reviewed_by": "Priya Nair"},
+    )
+    assert while_working.status_code == 409
     early = client.post(
         "/api/requests/REQ-7002/review",
         json={"outcome": "approve", "notes": "", "reviewed_by": "Priya Nair"},
@@ -436,3 +441,38 @@ def test_instructions_cover_the_queue_and_a_request(client):
     assert "running the support queue" in instructions["queue"]
     assert instructions["request"].startswith("You are the Shoppie Agent")
     assert "data/evals" not in instructions["request"]
+
+
+def test_support_review_warns_when_agent_unreachable_or_times_out(
+    client, monkeypatch, caplog
+):
+    client.post("/api/requests/REQ-7001/start", headers=AGENT_HEADERS)
+    calc = client.post(
+        "/api/requests/REQ-7001/refund",
+        json={
+            "reason": "cancellation",
+            "lines": [{"item_id": "ITM-10001-1", "quantity": 1}],
+        },
+        headers=AGENT_HEADERS,
+    )
+    client.post(
+        "/api/requests/REQ-7001/recommendation",
+        json={**RECOMMENDATION, "refund_amount": calc.json()["refund"]},
+        headers=AGENT_HEADERS,
+    )
+
+    def timeout(url: str, **kwargs: object):
+        raise main.httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(main.httpx, "post", timeout)
+    with caplog.at_level("WARNING"):
+        res = client.post(
+            "/api/requests/REQ-7001/review",
+            json={"outcome": "approve", "notes": "Ok", "reviewed_by": "Priya Nair"},
+        )
+
+    assert res.status_code == 200
+    assert res.json()["request_id"] == "REQ-7001"
+    assert res.json()["status"] == "decided"
+    assert res.json()["review"]["reviewed_by"] == "Priya Nair"
+    assert any("REQ-7001" in rec.getMessage() for rec in caplog.records)

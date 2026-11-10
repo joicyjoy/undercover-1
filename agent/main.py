@@ -91,6 +91,8 @@ class RequestState(TypedDict):
     attempt: int
     recommendation: dict[str, Any] | None
     review: dict[str, Any] | None
+    held: bool
+    is_evaluation: bool
 
 
 class WorkResult(TypedDict):
@@ -329,19 +331,32 @@ def screen_request(
     raise last_error or RuntimeError("The security check failed")
 
 
+def is_evaluation_record(record: dict[str, Any]) -> bool:
+    """Report whether a request record or context is an evaluation copy."""
+    nested = record.get("request") or {}
+    return bool(
+        record.get("copy_of")
+        or record.get("evaluation_id")
+        or nested.get("copy_of")
+        or nested.get("evaluation_id")
+    )
+
+
 def run_screen_node(
     state: RequestState, checker: BaseChatModel | None = None
 ) -> dict[str, Any]:
     """Screen the customer's request for hidden instructions before calling agent."""
     response = backend_get(f"/api/requests/{state['request_id']}/context")
     response.raise_for_status()
-    screening = screen_request(response.json(), checker)
+    context = response.json()
+    is_eval = bool(state.get("is_evaluation")) or is_evaluation_record(context)
+    screening = screen_request(context, checker)
     step = backend_post(
         f"/api/requests/{state['request_id']}/steps", {"stage": "security_check"}
     )
     step.raise_for_status()
     if not screening.instructions_found:
-        return {"recommendation": None}
+        return {"recommendation": None, "is_evaluation": is_eval}
     recommendation = Recommendation(
         outcome="request_information",
         rationale=screening.reason,
@@ -356,17 +371,17 @@ def run_screen_node(
         f"/api/requests/{state['request_id']}/recommendation", recommendation
     )
     saved.raise_for_status()
-    return {"recommendation": recommendation}
+    return {"recommendation": recommendation, "is_evaluation": is_eval}
 
 
-def after_screen(state: RequestState) -> Literal["agent", "approval", "complete"]:
+def after_screen(state: RequestState) -> str:
     """Move to approval when the security check flagged the request, or to agent."""
     if state.get("recommendation"):
         return after_decide(state)
     return "agent"
 
 
-def after_agent(state: RequestState) -> Literal["tools", "decide"]:
+def after_agent(state: RequestState) -> str:
     """Run the tools the model asked for, or move on to the decision."""
     last = state["messages"][-1]
     if isinstance(last, AIMessage) and last.tool_calls:
@@ -374,8 +389,10 @@ def after_agent(state: RequestState) -> Literal["tools", "decide"]:
     return "decide"
 
 
-def after_decide(state: RequestState) -> Literal["approval", "complete"]:
-    """Pause for support agent sign-off unless a review is already present."""
+def after_decide(state: RequestState) -> str:
+    """Pause for support agent sign-off unless reviewed or an evaluation copy."""
+    if state.get("is_evaluation"):
+        return END
     if state.get("review"):
         return "complete"
     return "approval"
@@ -389,7 +406,7 @@ def run_approval_node(state: RequestState) -> dict[str, Any]:
             "recommendation": state["recommendation"],
         }
     )
-    return {"review": answer}
+    return {"review": answer, "held": False}
 
 
 def run_complete_node(
@@ -420,7 +437,8 @@ def run_complete_node(
             f"/api/requests/{state['request_id']}/hold",
             {"reason": str(refused)},
         )
-    return {"review": payload}
+        return {"review": None, "held": True}
+    return {"review": payload, "held": False}
 
 
 def refusal(error: Exception) -> str:
@@ -464,7 +482,11 @@ def run_decide_node(
         "save_recommendation",
         {"request_id": state["request_id"], **recommendation},
     )
-    return {"recommendation": recommendation}
+    return {
+        "recommendation": recommendation,
+        "is_evaluation": bool(state.get("is_evaluation"))
+        or is_evaluation_record(context),
+    }
 
 
 def run_remember_node(state: RequestState, store: BaseStore) -> dict[str, Any]:
@@ -492,22 +514,9 @@ def run_remember_node(state: RequestState, store: BaseStore) -> dict[str, Any]:
     return {}
 
 
-def build_request_graph(
-    request_id: str,
-    llm: BaseChatModel | None = None,
-    *,
-    checkpointer: BaseCheckpointSaver[Any] | None = None,
-    route: Route | None = None,
-    store: BaseStore | None = None,
-) -> Any:
-    """Build and compile the synchronous StateGraph for one support request."""
-    active_route = route or get_route()
-    active_store = store if store is not None else memory.memory_store()
-    tools = make_request_tools(request_id, active_route, store=active_store)
+def _make_agent_node(tools: list[Any], llm: BaseChatModel | None) -> Any:
+    """Create the bounded model-invocation node for the request graph."""
     system_message = SystemMessage(REQUEST_INSTRUCTIONS)
-
-    def screen(state: RequestState) -> dict[str, Any]:
-        return run_screen_node(state)
 
     def agent(state: RequestState) -> dict[str, Any]:
         ai_calls = sum(1 for msg in state["messages"] if isinstance(msg, AIMessage))
@@ -521,6 +530,55 @@ def build_request_graph(
         )
         return {"messages": [reply]}
 
+    return agent
+
+
+def _wire_completion_edges(
+    builder: StateGraph[Any], active_store: BaseStore | None
+) -> None:
+    """Attach approval, completion, hold-loop, and memory edges to the graph."""
+    builder.add_edge("approval", "complete")
+    if active_store is not None:
+
+        def remember_node(state: RequestState) -> dict[str, Any]:
+            return run_remember_node(state, active_store)
+
+        def after_complete(state: RequestState) -> str:
+            if state.get("held"):
+                return "approval"
+            return REMEMBER
+
+        builder.add_node(REMEMBER, remember_node)
+        builder.add_conditional_edges(
+            "complete", after_complete, ["approval", REMEMBER, END]
+        )
+        builder.add_edge(REMEMBER, END)
+        return
+
+    def after_complete_no_memory(state: RequestState) -> str:
+        return "approval" if state.get("held") else END
+
+    builder.add_conditional_edges(
+        "complete", after_complete_no_memory, ["approval", END]
+    )
+
+
+def build_request_graph(
+    request_id: str,
+    llm: BaseChatModel | None = None,
+    *,
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
+    route: Route | None = None,
+    store: BaseStore | None = None,
+) -> Any:
+    """Build and compile the synchronous StateGraph for one support request."""
+    active_route = route or get_route()
+    active_store = store if store is not None else memory.memory_store()
+    tools = make_request_tools(request_id, active_route, store=active_store)
+
+    def screen(state: RequestState) -> dict[str, Any]:
+        return run_screen_node(state)
+
     def decide(state: RequestState) -> dict[str, Any]:
         return run_decide_node(state, llm, active_route)
 
@@ -529,7 +587,7 @@ def build_request_graph(
 
     builder = StateGraph(RequestState)
     builder.add_node("screen", screen)
-    builder.add_node("agent", agent)
+    builder.add_node("agent", _make_agent_node(tools, llm))
     builder.add_node("tools", ToolNode(tools, handle_tool_errors=refusal))
     builder.add_node("decide", decide)
     builder.add_node("approval", run_approval_node)
@@ -537,24 +595,12 @@ def build_request_graph(
 
     builder.add_edge(START, "screen")
     builder.add_conditional_edges(
-        "screen", after_screen, ["agent", "approval", "complete"]
+        "screen", after_screen, ["agent", "approval", "complete", END]
     )
     builder.add_conditional_edges("agent", after_agent, ["tools", "decide"])
     builder.add_edge("tools", "agent")
-
-    if active_store is not None:
-
-        def remember_node(state: RequestState) -> dict[str, Any]:
-            return run_remember_node(state, active_store)
-
-        builder.add_node(REMEMBER, remember_node)
-        builder.add_edge("decide", REMEMBER)
-        builder.add_conditional_edges(REMEMBER, after_decide, ["approval", "complete"])
-    else:
-        builder.add_conditional_edges("decide", after_decide, ["approval", "complete"])
-
-    builder.add_edge("approval", "complete")
-    builder.add_edge("complete", END)
+    builder.add_conditional_edges("decide", after_decide, ["approval", "complete", END])
+    _wire_completion_edges(builder, active_store)
 
     return builder.compile(
         checkpointer=checkpointer or get_checkpointer(),
@@ -591,10 +637,47 @@ def run_request(
         "attempt": attempt,
         "recommendation": None,
         "review": None,
+        "held": False,
+        "is_evaluation": False,
     }
     with context_manager:
         result = graph.invoke(initial_state, config, durability="sync")
     return result["recommendation"]
+
+
+def is_paused(
+    request_id: str,
+    thread_id: str | None = None,
+    attempt: int | None = None,
+) -> bool:
+    """Report whether a request's graph thread has an interrupt waiting."""
+    if thread_id is None:
+        if attempt is None:
+            response = backend_get(f"/api/requests/{request_id}")
+            if response.status_code == httpx.codes.NOT_FOUND:
+                return False
+            response.raise_for_status()
+            attempt = int(response.json()["attempts"]) + 1
+        thread_id = f"request-{request_id}-attempt-{attempt}"
+    graph = build_request_graph(request_id)
+    _, config = trace_context(request_id, thread_id)
+    state = graph.get_state(config)
+    return bool(state.values and (state.next or state.interrupts))
+
+
+def _resume_graph_thread(
+    graph: Any,
+    request_id: str,
+    thread_id: str,
+    review: dict[str, Any],
+) -> dict[str, Any]:
+    """Resume a compiled graph thread with an answer after confirming it is paused."""
+    context_manager, config = trace_context(request_id, thread_id)
+    state = graph.get_state(config)
+    if not (state.values and (state.next or state.interrupts)):
+        raise ValueError(f"Request {request_id} is not paused")
+    with context_manager:
+        return graph.invoke(Command(resume=review), config, durability="sync")
 
 
 def resume_request_thread(
@@ -607,30 +690,11 @@ def resume_request_thread(
     """Resume a paused request thread with the support agent's sign-off."""
     active_route = route or get_route()
     graph = build_request_graph(request_id, llm, route=active_route)
-    context_manager, config = trace_context(request_id, thread_id)
-    state = graph.get_state(config)
-    if state.next:
-        with context_manager:
-            return graph.invoke(Command(resume=review), config, durability="sync")
-    payload = {
-        "outcome": review["outcome"],
-        "notes": review.get("notes", ""),
-        "reviewed_by": review["reviewed_by"],
-        "reviewed_at": review.get("reviewed_at") or datetime.now(UTC).isoformat(),
-    }
-    run_complete_node(
-        {"request_id": request_id, "review": payload},  # type: ignore[typeddict-item]
-        active_route,
-    )
-    return {**(state.values or {}), "review": payload}
+    return _resume_graph_thread(graph, request_id, thread_id, review)
 
 
-def resume_request(
-    request_id: str,
-    llm: BaseChatModel | None = None,
-    route: Route | None = None,
-) -> dict[str, Any]:
-    """Resume a signed-off request by its request id and complete it."""
+def prepare_resume(request_id: str) -> dict[str, Any]:
+    """Validate that a request exists, has a review, and is paused on its thread."""
     response = backend_get(f"/api/requests/{request_id}")
     if response.status_code == httpx.codes.NOT_FOUND:
         raise LookupError(f"Support request {request_id} not found")
@@ -641,11 +705,29 @@ def resume_request(
         raise ValueError(f"Request {request_id} has no review to resume")
     attempt = int(detail["attempts"]) + 1
     thread_id = f"request-{request_id}-attempt-{attempt}"
-    result = resume_request_thread(request_id, thread_id, review, llm, route=route)
+    if not is_paused(request_id, thread_id):
+        raise ValueError(f"Request {request_id} is not paused")
+    return {"thread_id": thread_id, "review": review}
+
+
+def resume_request(
+    request_id: str,
+    llm: BaseChatModel | None = None,
+    route: Route | None = None,
+    store: BaseStore | None = None,
+) -> dict[str, Any]:
+    """Resume a signed-off request by its request id and complete it."""
+    prepared = prepare_resume(request_id)
+    graph = build_request_graph(
+        request_id, llm, route=route or get_route(), store=store
+    )
+    result = _resume_graph_thread(
+        graph, request_id, prepared["thread_id"], prepared["review"]
+    )
     return {
         "request_id": request_id,
         "status": "decided",
-        "review": result.get("review") or review,
+        "review": result.get("review") or prepared["review"],
     }
 
 
@@ -655,6 +737,29 @@ def _skipped_result(request_id: str) -> WorkResult:
         "status": "skipped",
         "line": f"{request_id}: not a waiting request, so not worked.",
     }
+
+
+def _handle_existing_request(
+    request_id: str,
+    llm: BaseChatModel | None,
+    route: Route | None,
+    store: BaseStore | None,
+) -> tuple[int, WorkResult | None]:
+    detail = backend_get(f"/api/requests/{request_id}").json()
+    attempt = int(detail["attempts"]) + 1
+    if detail.get("review") is not None:
+        if not is_paused(request_id, attempt=attempt):
+            return attempt, _skipped_result(request_id)
+        resumed = resume_request(request_id, llm, route=route, store=store)
+        outcome = resumed["review"]["outcome"]
+        return attempt, {
+            "request_id": request_id,
+            "status": "done",
+            "line": f"{request_id}: {outcome}, completed after support review.",
+        }
+    if detail["status"] != "in_progress":
+        return attempt, _skipped_result(request_id)
+    return attempt, None
 
 
 def work_request(
@@ -668,46 +773,33 @@ def work_request(
     if response.status_code == httpx.codes.NOT_FOUND:
         return _skipped_result(request_id)
     if response.status_code == httpx.codes.CONFLICT:
-        detail = backend_get(f"/api/requests/{request_id}").json()
-        if detail.get("review") is not None:
-            resumed = resume_request(request_id, llm, route=route)
-            outcome = resumed["review"]["outcome"]
-            return {
-                "request_id": request_id,
-                "status": "done",
-                "line": f"{request_id}: {outcome}, completed after support review.",
-            }
-        if detail["status"] != "in_progress":
-            return _skipped_result(request_id)
-        attempt = int(detail["attempts"]) + 1
+        attempt, early = _handle_existing_request(request_id, llm, route, store)
+        if early is not None:
+            return early
     else:
         response.raise_for_status()
         attempt = response.json()["attempt"]
     thread_id = f"request-{request_id}-attempt-{attempt}"
     try:
         recommendation = run_request(
-            request_id,
-            thread_id,
-            llm,
-            route=route,
-            store=store,
+            request_id, thread_id, llm, route=route, store=store
         )
     except Exception as error:
         get_checkpointer().delete_thread(thread_id)
         failure = backend_post(f"/api/requests/{request_id}/failure")
         failure.raise_for_status()
-        if failure.json()["status"] == "left_for_support":
-            return {
-                "request_id": request_id,
-                "status": "left_for_support",
-                "line": f"{request_id}: failed ({type(error).__name__}) on attempt "
-                f"{attempt}, left for a support agent.",
-            }
+        exhausted = failure.json()["status"] == "left_for_support"
+        status: WorkStatus = "left_for_support" if exhausted else "waiting"
+        tail = (
+            "left for a support agent."
+            if exhausted
+            else "back in the queue to be tried again."
+        )
         return {
             "request_id": request_id,
-            "status": "waiting",
+            "status": status,
             "line": f"{request_id}: failed ({type(error).__name__}) on attempt "
-            f"{attempt}, back in the queue to be tried again.",
+            f"{attempt}, {tail}",
         }
     return {
         "request_id": request_id,

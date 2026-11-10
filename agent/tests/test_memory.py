@@ -34,9 +34,18 @@ def tools_of(graph: Any) -> set[str]:
     return {getattr(t, "name", str(t)) for t in getattr(tools_node, "tools", [])}
 
 
-def test_an_approval_saves_the_request_and_the_decision(store):
+REVIEW = {
+    "outcome": "approve",
+    "notes": "Confirmed.",
+    "reviewed_by": "Priya Nair",
+    "reviewed_at": "2026-11-06T10:00:00+00:00",
+}
+
+
+def test_an_approval_saves_the_request_and_the_decision(store, monkeypatch):
     assert store.start_request("REQ-7008")
     mem_store = MemoryStandIn()
+    monkeypatch.setattr(memory, "memory_store", lambda: mem_store)
     result = main.run_request(
         "REQ-7008",
         "thread-mem-1",
@@ -44,6 +53,9 @@ def test_an_approval_saves_the_request_and_the_decision(store):
         store=mem_store,
     )
     assert result["outcome"] == "approve"
+    assert mem_store.events == []
+
+    main.resume_request_thread("REQ-7008", "thread-mem-1", REVIEW, scripted_model())
     assert len(mem_store.events) == 2
     requested, decided = mem_store.events
 
@@ -65,9 +77,10 @@ def test_an_approval_saves_the_request_and_the_decision(store):
 
 
 @pytest.mark.parametrize("outcome", ["approve", "decline", "request_information"])
-def test_each_decision_outcome_is_saved(store, outcome):
+def test_each_decision_outcome_is_saved(store, outcome, monkeypatch):
     assert store.start_request("REQ-7008")
     mem_store = MemoryStandIn()
+    monkeypatch.setattr(memory, "memory_store", lambda: mem_store)
     result = main.run_request(
         "REQ-7008",
         f"thread-{outcome}",
@@ -75,6 +88,12 @@ def test_each_decision_outcome_is_saved(store, outcome):
         store=mem_store,
     )
     assert result["outcome"] == outcome
+    assert mem_store.events == []
+
+    review = {**REVIEW, "outcome": outcome}
+    main.resume_request_thread(
+        "REQ-7008", f"thread-{outcome}", review, scripted_model()
+    )
     assert len(mem_store.events) == 2
     assert [(e.actor, e.session) for e in mem_store.events] == [
         ("CUS-1008", "REQ-7008"),
@@ -92,10 +111,12 @@ def test_a_request_flagged_by_security_check_is_never_saved(store, monkeypatch):
         ),
     )
     mem_store = MemoryStandIn()
+    monkeypatch.setattr(memory, "memory_store", lambda: mem_store)
     result = main.run_request(
         "REQ-7008", "thread-sec", scripted_model(), store=mem_store
     )
     assert result["policy_citations"] == ["Security check"]
+    main.resume_request_thread("REQ-7008", "thread-sec", REVIEW, scripted_model())
     assert mem_store.events == []
 
 
@@ -118,6 +139,7 @@ def test_evaluation_copy_does_not_save_to_memory(store, monkeypatch):
         scripted_model(),
         store=mem_store,
     )
+    main.run_remember_node({"request_id": "REQ-7008"}, mem_store)  # type: ignore[typeddict-item]
     assert result["outcome"] == "approve"
     assert mem_store.events == []
 
@@ -149,9 +171,12 @@ def test_search_memory_recalls_customer_memories_and_excludes_own_request(store)
     ]
 
 
-def test_memory_unreachable_logs_warning_on_save_and_request_succeeds(store, caplog):
+def test_memory_unreachable_logs_warning_on_save_and_request_succeeds(
+    store, caplog, monkeypatch
+):
     assert store.start_request("REQ-7008")
     mem_store = MemoryStandIn(reachable=False)
+    monkeypatch.setattr(memory, "memory_store", lambda: mem_store)
     with caplog.at_level(logging.WARNING):
         result = main.run_request(
             "REQ-7008",
@@ -159,9 +184,16 @@ def test_memory_unreachable_logs_warning_on_save_and_request_succeeds(store, cap
             scripted_model(outcome="decline"),
             store=mem_store,
         )
+        main.resume_request_thread(
+            "REQ-7008",
+            "thread-unreachable",
+            {**REVIEW, "outcome": "decline"},
+            scripted_model(outcome="decline"),
+        )
     assert result["outcome"] == "decline"
     record = store.get_request("REQ-7008")
     assert record["recommendation"]["outcome"] == "decline"
+    assert record["status"] == "decided"
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert any("EndpointConnectionError" in r.getMessage() for r in warnings)
 

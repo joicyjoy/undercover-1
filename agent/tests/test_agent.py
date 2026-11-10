@@ -353,12 +353,55 @@ def test_graph_pauses_at_approval_and_resumes_to_complete_once(store):
     assert decided["steps"][-1]["stage"] == "completed"
     assert "Priya Nair" in decided["steps"][-1]["message"]
 
-    main.resume_request_thread("REQ-7008", thread_id, review, scripted_model())
+    with pytest.raises(ValueError, match="not paused"):
+        main.resume_request_thread("REQ-7008", thread_id, review, scripted_model())
     after_repeat = store.get_request("REQ-7008")
     completed_steps = [
         step for step in after_repeat["steps"] if step["stage"] == "completed"
     ]
     assert len(completed_steps) == 1
+
+
+def test_evaluation_copy_finishes_without_pausing(store, monkeypatch):
+    assert store.start_request("REQ-7008") == 1
+    orig_get = main.backend_get
+
+    def eval_get(path: str):
+        resp = orig_get(path)
+        if path.endswith("/context"):
+            data = resp.json()
+            data["copy_of"] = "REQ-7008"
+            data["evaluation_id"] = "EVAL-1"
+
+            class Resp:
+                status_code = resp.status_code
+
+                def raise_for_status(self) -> None:
+                    return None
+
+                def json(self) -> dict[str, Any]:
+                    return data
+
+            return Resp()
+        return resp
+
+    monkeypatch.setattr(main, "backend_get", eval_get)
+    thread_id = "request-REQ-7008-attempt-1"
+    recommendation = main.run_request("REQ-7008", thread_id, scripted_model())
+    graph = main.build_request_graph("REQ-7008", scripted_model())
+    _, config = main.trace_context("REQ-7008", thread_id)
+    finished = graph.get_state(config)
+
+    assert recommendation["outcome"] == "approve"
+    assert finished.next == ()
+    assert finished.interrupts == ()
+    with pytest.raises(ValueError, match="not paused"):
+        main.resume_request_thread(
+            "REQ-7008",
+            thread_id,
+            {"outcome": "approve", "notes": "", "reviewed_by": "Priya Nair"},
+            scripted_model(),
+        )
 
 
 def test_runaway_loop_stops_after_30_model_calls(store):
@@ -427,10 +470,13 @@ def test_agent_service_resumes_signed_off_request_and_runs_queue(
         assert agent_client.post("/requests/REQ-0000/resume").status_code == 404
         assert agent_client.post("/requests/REQ-7008/resume").status_code == 409
 
+        resume_calls: list[Any] = []
         monkeypatch.setattr(
             backend_main,
             "notify_agent_resume",
-            lambda rid: agent_client.post(f"/requests/{rid}/resume"),
+            lambda rid: resume_calls.append(
+                agent_client.post(f"/requests/{rid}/resume")
+            ),
         )
         reviewed = api.post(
             "/api/requests/REQ-7008/review",
@@ -441,6 +487,13 @@ def test_agent_service_resumes_signed_off_request_and_runs_queue(
             },
         )
         assert reviewed.status_code == 200
+        assert reviewed.json()["status"] == "decided"
+        assert resume_calls[0].json() == {
+            "request_id": "REQ-7008",
+            "status": "accepted",
+        }
+        assert agent_client.post("/requests/REQ-7008/resume").status_code == 409
+        assert agent_client.post("/requests/REQ-7001/resume").status_code == 409
         decided = store.get_request("REQ-7008")
         assert decided["status"] == "decided"
         assert decided["review"]["reviewed_by"] == "Priya Nair"

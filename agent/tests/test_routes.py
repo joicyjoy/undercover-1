@@ -251,9 +251,10 @@ def test_a_payment_the_gateway_refuses_waits_for_sign_off(api, gateway):
     assert res2["status"] == "done"
 
     req = api.get("/api/requests/REQ-7004").json()
-    # It must be waiting for review with gateway refusal recorded!
+    # It must be waiting for review with gateway refusal recorded and paused!
     assert req["status"] == "waiting_for_agent_review"
     assert req["recommendation"]["gateway_refusal"] == DENIED
+    assert main.is_paused("REQ-7004", attempt=1)
     refusals = [s for s in req["steps"] if s["stage"] == "refusal"]
     assert len(refusals) >= 1
     assert "refused by the gateway" in refusals[-1]["message"].lower()

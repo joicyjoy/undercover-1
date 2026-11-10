@@ -1,5 +1,6 @@
 """The Shoppie support backend."""
 
+import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -27,6 +28,8 @@ from backend.refunds import (
     work_out_refund,
 )
 from backend.store import AGENT_STAGES, Store, TodoStatus, now
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE_PATH = (
     Path(__file__).resolve().parent.parent / "data" / "shoppie.sqlite3"
@@ -228,15 +231,18 @@ def run_in_background(store: Store, run_id: str, cap: int) -> None:
 
 
 def notify_agent_resume(request_id: str) -> None:
-    """Tell the agent service to tidy a signed-off request's thread when reachable."""
+    """Ask the agent service to resume a paused request, warning if unreachable."""
     try:
-        httpx.post(
+        response = httpx.post(
             f"{agent_service_url()}/requests/{request_id}/resume",
             headers=agent_service_headers(),
-            timeout=30,
+            timeout=10,
         )
-    except Exception:
-        return
+        response.raise_for_status()
+    except Exception as error:
+        logger.warning(
+            "Could not reach agent service to resume %s: %s", request_id, error
+        )
 
 
 @app.get("/api/health", operation_id="health")
@@ -501,12 +507,11 @@ def review_request(
     request_id: str,
     review: ReviewInput,
     request: Request,
-    background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
-    """Record a support decision and trigger agent completion without order actions."""
+    """Record a support decision and ask the agent to finish any paused thread."""
     store = store_of(request)
     result = require_request(store, request_id)
-    if result["status"] not in {"waiting_for_agent_review", "in_progress", "decided"}:
+    if result["status"] not in {"waiting_for_agent_review", "decided"}:
         raise HTTPException(status_code=409, detail="Request is not ready for review")
     saved_review = {
         "outcome": review.outcome,
@@ -519,8 +524,9 @@ def review_request(
     if status is None:
         raise HTTPException(status_code=409, detail="Request was already reviewed")
     if result.get("recommendation") is not None:
-        background_tasks.add_task(notify_agent_resume, request_id)
-    return {"request_id": request_id, "status": status, "review": saved_review}
+        notify_agent_resume(request_id)
+    updated = require_request(store, request_id)
+    return {**updated, "request_id": request_id}
 
 
 @app.post(
