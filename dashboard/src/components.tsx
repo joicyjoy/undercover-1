@@ -381,6 +381,12 @@ export function RunPanel({ run }: Readonly<{ run: Run | null }>) {
           ))}
         </ol>
       )}
+      {run.stop_reason && run.status === "failed" && (
+        <div className="run-stop-reason">
+          <small>REASON STOPPED</small>
+          <p>{run.stop_reason}</p>
+        </div>
+      )}
       {run.summary && run.status !== "running" && (
         <div className="run-summary">
           <small>RUN SUMMARY</small>

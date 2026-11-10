@@ -127,6 +127,8 @@ export interface Run {
   started_at: string;
   finished_at: string | null;
   summary: string | null;
+  last_heartbeat_at?: string | null;
+  stop_reason?: string | null;
   todos: Todo[];
 }
 

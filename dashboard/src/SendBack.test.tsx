@@ -2,8 +2,8 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { ProgressCard } from "./ProgressCard";
-import { ActionPanel, SentBackHistory } from "./components";
-import type { Recommendation, RequestDetail } from "./types";
+import { ActionPanel, RunPanel, SentBackHistory } from "./components";
+import type { Recommendation, RequestDetail, Run } from "./types";
 
 afterEach(() => {
   cleanup();
@@ -213,4 +213,21 @@ it("renders sent-back history, timeline step, waiting notice, and send-back form
       }),
     }),
   );
+});
+
+it("displays stop_reason on a stopped run and refreshes run state on 502/409", () => {
+  const failedRun: Run = {
+    run_id: "RUN-STOP99",
+    cap: 2,
+    status: "failed",
+    started_at: "2026-11-10T10:00:00Z",
+    finished_at: "2026-11-10T10:05:00Z",
+    summary: "The agent stopped answering",
+    stop_reason: "The agent stopped answering",
+    todos: [],
+  };
+  render(<RunPanel run={failedRun} />);
+  expect(screen.getByText("Stopped")).toBeDefined();
+  expect(screen.getByText("REASON STOPPED")).toBeDefined();
+  expect(screen.getAllByText("The agent stopped answering")).toHaveLength(2);
 });

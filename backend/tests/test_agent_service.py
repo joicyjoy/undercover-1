@@ -9,15 +9,12 @@ from botocore.exceptions import (
     ReadTimeoutError,
 )
 
-from backend import agent_service, main
-from backend.store import Store
+from backend import agent_service
 
 TEST_KEY = "test-agent-secret-key-0123456789abcdef"
 
 
-def test_http_route_outcomes(tmp_path, monkeypatch):
-    store = Store(tmp_path / "http.sqlite3")
-    store.initialize()
+def test_http_route_outcomes(monkeypatch):
     monkeypatch.setenv("UNDERCOVER_API_KEY", TEST_KEY)
     monkeypatch.setenv("UNDERCOVER_AGENT", "http://agent.local:8080/")
 
@@ -74,12 +71,7 @@ def test_http_route_outcomes(tmp_path, monkeypatch):
         raise agent_service.httpx.ReadTimeout("slow")
 
     monkeypatch.setattr(agent_service.httpx, "post", raise_timeout)
-    run_id = store.create_run(2)
-    assert run_id is not None
-    main.run_in_background(store, run_id, 2)
-    run = store.current_run()
-    assert run is not None
-    assert run["status"] == "running"
+    assert agent_service.call_agent({"operation": "work_run"}).state == "uncertain"
 
     monkeypatch.setattr(
         agent_service.httpx,

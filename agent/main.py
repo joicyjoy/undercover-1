@@ -660,12 +660,13 @@ def build_request_graph(
 
 
 @contextlib.contextmanager
-def heartbeat(path: str, interval: float = HEARTBEAT_SECONDS) -> Iterator[None]:
+def heartbeat(path: str, interval: float | None = None) -> Iterator[None]:
     """Send periodic POST heartbeats while background agent work runs."""
+    wait_seconds = HEARTBEAT_SECONDS if interval is None else interval
     stop = threading.Event()
 
     def beat() -> None:
-        while not stop.wait(interval):
+        while not stop.wait(wait_seconds):
             with contextlib.suppress(Exception):
                 backend_post(path)
 
@@ -675,6 +676,7 @@ def heartbeat(path: str, interval: float = HEARTBEAT_SECONDS) -> Iterator[None]:
         yield
     finally:
         stop.set()
+        worker.join(timeout=1.0)
 
 
 def _pending_send_back(request_id: str) -> dict[str, Any] | None:

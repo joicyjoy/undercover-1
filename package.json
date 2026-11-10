@@ -8,7 +8,7 @@
   "scripts": {
     "prepare": "lefthook install && playwright install chromium",
     "dev": "concurrently -k -n backend,agent,context,dashboard npm:dev:backend npm:dev:agent npm:dev:context npm:dev:dashboard",
-    "dev:backend": "uv run -m uvicorn backend.main:app --reload --reload-dir backend",
+    "dev:backend": "uv run --env-file .env -m uvicorn backend.main:app --reload --reload-dir backend",
     "dev:agent": "uv run --env-file .env -m uvicorn agent.entrypoint:app --port 8080 --reload --reload-dir agent",
     "dev:context": "uv run -m context",
     "dev:dashboard": "vite dashboard",

@@ -8,6 +8,7 @@ import threading
 from collections.abc import Callable
 from typing import Any, Literal
 
+import httpx
 from bedrock_agentcore.identity.auth import requires_api_key
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -38,7 +39,6 @@ class WorkRunInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     operation: Literal["work_run"]
     run_id: str = Field(min_length=1)
-    cap: int = Field(ge=1)
 
 
 class ResumeRequestInput(BaseModel):
@@ -176,16 +176,29 @@ def _handle_resume(request_id: str) -> dict[str, Any]:
     return {"accepted": True}
 
 
+def _handle_work_run(run_id: str) -> dict[str, Any]:
+    """Verify a run is still running and schedule queue work on a thread."""
+    response = main.backend_get(f"/api/runs/{run_id}")
+    if response.status_code == httpx.codes.NOT_FOUND:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    response.raise_for_status()
+    run = response.json()
+    if run.get("status") != "running":
+        return {"refused": f"Run {run_id} is not running"}
+    cap = int(run["cap"])
+    _start_async_task(
+        f"work_run:{run_id}",
+        lambda: queue.work_run(run_id, cap),
+    )
+    return {"accepted": True}
+
+
 def _dispatch(model: BaseModel) -> dict[str, Any]:
     """Execute a validated entrypoint operation."""
     if isinstance(model, HealthInput):
         return {"healthy": True}
     if isinstance(model, WorkRunInput):
-        _start_async_task(
-            f"work_run:{model.run_id}",
-            lambda: queue.work_run(model.run_id, model.cap),
-        )
-        return {"accepted": True}
+        return _handle_work_run(model.run_id)
     if isinstance(model, ResumeRequestInput):
         return _handle_resume(model.request_id)
     raise HTTPException(status_code=400, detail="Unsupported payload")

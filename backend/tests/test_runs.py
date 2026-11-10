@@ -1,7 +1,10 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import update
 from sqlalchemy.pool import NullPool
 
 from backend import agent_service, main
@@ -11,7 +14,9 @@ from backend.store import (
     MAX_OVERFLOW,
     MAX_POOL_SIZE,
     SCHEMA,
+    STALE_WORK_REASON,
     Store,
+    runs,
     sqlalchemy_postgres_url,
 )
 
@@ -39,7 +44,19 @@ def store(tmp_path):
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(tmp_path / "api.sqlite3"))
     monkeypatch.setenv("UNDERCOVER_API_KEY", TEST_API_KEY)
-    monkeypatch.setattr(main, "run_in_background", lambda *args: None)
+
+    class AcceptedResponse:
+        status_code = 200
+        text = '{"accepted": true}'
+
+        def json(self) -> dict[str, bool]:
+            return {"accepted": True}
+
+    monkeypatch.setattr(
+        agent_service.httpx,
+        "post",
+        lambda url, **kwargs: AcceptedResponse(),
+    )
     with TestClient(app) as test_client:
         yield test_client
 
@@ -95,7 +112,7 @@ def test_a_request_never_gets_a_second_recommendation(store):
     assert stages.count("completed") == 1
 
 
-def test_restart_keeps_requests_in_progress_and_closes_stopped_runs(store):
+def test_restart_keeps_requests_in_progress_and_preserves_running_run(store):
     run_id = store.create_run(5)
     store.start_request("REQ-7001")
     store.initialize()
@@ -105,7 +122,7 @@ def test_restart_keeps_requests_in_progress_and_closes_stopped_runs(store):
     assert request["status"] == "in_progress"
     assert run is not None
     assert run["run_id"] == run_id
-    assert run["status"] == "failed"
+    assert run["status"] == "running"
 
 
 def test_reseed_rebuilds_every_request_as_waiting(store):
@@ -376,53 +393,134 @@ def test_support_review_hands_off_to_agent_or_decides_left_for_support(
     assert left_review.json()["status"] == "decided"
 
 
-def test_background_run_is_handed_to_the_agent_service_with_the_key(store, monkeypatch):
-    calls: list[dict[str, object]] = []
-
-    class Accepted:
-        status_code = 200
-
-        def json(self) -> dict[str, object]:
-            return {"accepted": True}
-
-    def fake_post(url: str, **kwargs: object) -> Accepted:
-        calls.append({"url": url, **kwargs})
-        return Accepted()
-
+def test_start_run_posts_work_run_with_bearer_and_undoes_refused_or_unreachable(
+    tmp_path, monkeypatch
+):
+    db = tmp_path / "gate.sqlite3"
+    monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(db))
     monkeypatch.setenv("UNDERCOVER_API_KEY", TEST_API_KEY)
     monkeypatch.setenv("UNDERCOVER_AGENT", "http://agent.test/")
-    monkeypatch.setattr(agent_service.httpx, "post", fake_post)
-    run_id = store.create_run(2)
-    assert run_id is not None
-    main.run_in_background(store, run_id, 2)
+    calls: list[dict[str, Any]] = []
 
-    assert calls[0]["url"] == "http://agent.test/invocations"
-    assert calls[0]["json"] == {
-        "operation": "work_run",
-        "run_id": run_id,
-        "cap": 2,
-    }
-    assert calls[0]["headers"] == {"Authorization": f"Bearer {TEST_API_KEY}"}
-    assert calls[0]["timeout"] == 10.0
-    run = store.current_run()
-    assert run is not None
-    assert run["status"] == "running"
+    class FakeResponse:
+        def __init__(self, status_code: int, body: dict[str, Any]) -> None:
+            self.status_code = status_code
+            self._body = body
+            self.text = str(body)
+
+        def json(self) -> dict[str, Any]:
+            return self._body
+
+    def accept_post(url: str, **kwargs: Any) -> FakeResponse:
+        calls.append({"url": url, **kwargs})
+        return FakeResponse(200, {"accepted": True})
+
+    with TestClient(app) as test_client:
+        monkeypatch.setattr(agent_service.httpx, "post", accept_post)
+        started = test_client.post("/api/runs", json={"cap": 2})
+        assert started.status_code == 200
+        run_id = started.json()["run_id"]
+        assert calls[0]["url"] == "http://agent.test/invocations"
+        assert calls[0]["json"] == {"operation": "work_run", "run_id": run_id}
+        assert calls[0]["headers"] == {"Authorization": f"Bearer {TEST_API_KEY}"}
+
+        dup = test_client.post("/api/runs", json={"cap": 2})
+        assert dup.status_code == 409
+        assert run_id in dup.json()["detail"]
+
+        # Finish run to free the gate, then simulate unreachable agent
+        test_client.post(
+            f"/api/runs/{run_id}/finish",
+            json={"status": "finished", "summary": "Done"},
+            headers=AGENT_HEADERS,
+        )
+
+        def unreachable(url: str, **kwargs: Any) -> None:
+            raise agent_service.httpx.ConnectError("connection refused")
+
+        monkeypatch.setattr(agent_service.httpx, "post", unreachable)
+        failed_start = test_client.post("/api/runs", json={"cap": 2})
+        assert failed_start.status_code == 502
+        failed_run = test_client.get("/api/runs/current").json()
+        assert failed_run["status"] == "failed"
+        assert "connection refused" in failed_run["stop_reason"]
+
+        # Refused clears gate too; a subsequent accepted start succeeds
+        monkeypatch.setattr(
+            agent_service.httpx,
+            "post",
+            lambda url, **kw: FakeResponse(200, {"refused": "Busy"}),
+        )
+        refused_start = test_client.post("/api/runs", json={"cap": 2})
+        assert refused_start.status_code == 409
+        assert test_client.get("/api/runs/current").json()["stop_reason"] == "Busy"
+
+        monkeypatch.setattr(agent_service.httpx, "post", accept_post)
+        recovered = test_client.post("/api/runs", json={"cap": 3})
+        assert recovered.status_code == 200
 
 
-def test_background_run_is_marked_failed_when_the_agent_service_is_unreachable(
-    store, monkeypatch
-):
-    def unreachable(url: str, **kwargs: object):
-        raise agent_service.httpx.ConnectError("connection refused")
+def test_start_run_timeout_leaves_run_running_and_gate_locked(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(tmp_path / "timeout.sqlite3"))
+    monkeypatch.setenv("UNDERCOVER_API_KEY", TEST_API_KEY)
 
-    monkeypatch.setattr(agent_service.httpx, "post", unreachable)
-    run_id = store.create_run(2)
-    assert run_id is not None
-    main.run_in_background(store, run_id, 2)
-    run = store.current_run()
-    assert run is not None
-    assert run["status"] == "failed"
-    assert "agent service failed" in run["summary"]
+    def timeout(url: str, **kwargs: Any) -> None:
+        raise agent_service.httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(agent_service.httpx, "post", timeout)
+    with TestClient(app) as test_client:
+        timed = test_client.post("/api/runs", json={"cap": 1})
+        assert timed.status_code == 504
+        assert "Reload the page" in timed.json()["detail"]
+        current = test_client.get("/api/runs/current").json()
+        assert current["status"] == "running"
+        assert test_client.post("/api/runs", json={"cap": 1}).status_code == 409
+
+
+def test_concurrent_create_run_only_allows_one_winner(store):
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(store.create_run, [2, 2]))
+    winners = [run_id for run_id in results if run_id is not None]
+    assert len(winners) == 1
+
+
+def test_stale_run_recovered_after_five_minutes_while_heartbeat_keeps_alive(client):
+    store = app.state.store
+    first_id = client.post("/api/runs", json={"cap": 2}).json()["run_id"]
+    old_time = (datetime.now(UTC) - timedelta(minutes=6)).isoformat()
+    with store.engine.begin() as conn:
+        conn.execute(
+            update(runs).where(runs.c.run_id == first_id).values(started_at=old_time)
+        )
+    # Heartbeat within 5 minutes keeps old started_at run alive
+    beat = client.post(f"/api/runs/{first_id}/heartbeat", headers=AGENT_HEADERS)
+    assert beat.status_code == 200
+    assert client.post("/api/runs", json={"cap": 2}).status_code == 409
+
+    # Quiet heartbeat for > 5 minutes lets new run recover it with stop_reason
+    with store.engine.begin() as conn:
+        conn.execute(
+            update(runs)
+            .where(runs.c.run_id == first_id)
+            .values(last_heartbeat_at=old_time)
+        )
+    second = client.post("/api/runs", json={"cap": 2})
+    assert second.status_code == 200
+    old_run = client.get(f"/api/runs/{first_id}").json()
+    assert old_run["status"] == "failed"
+    assert old_run["stop_reason"] == STALE_WORK_REASON
+    assert old_run["summary"] == STALE_WORK_REASON
+    assert (
+        client.post(
+            f"/api/runs/{first_id}/heartbeat", headers=AGENT_HEADERS
+        ).status_code
+        == 409
+    )
+    assert client.get("/api/runs/RUN-NOPE").status_code == 404
+    assert (
+        client.post("/api/runs/RUN-NOPE/heartbeat", headers=AGENT_HEADERS).status_code
+        == 404
+    )
 
 
 def test_finish_run_needs_the_key_and_a_running_run(client):

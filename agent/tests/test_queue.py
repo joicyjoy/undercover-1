@@ -1,3 +1,4 @@
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
@@ -306,3 +307,48 @@ def test_dispatch_leaves_active_resume_alone_and_works_missed_send_back(
     )
     assert store.get_request("REQ-7007")["status"] == "waiting_for_agent_review"
     assert store.get_request("REQ-7007")["recommendation"]["outcome"] == "decline"
+
+
+def test_work_run_fetches_cap_heartbeats_refuses_non_running_and_stops_only_itself(
+    api, store, monkeypatch
+):
+    beats: list[str] = []
+    monkeypatch.setattr(main, "HEARTBEAT_SECONDS", 0.01)
+    orig_post = main.backend_post
+
+    def track_post(path: str, payload=None):
+        if path.endswith("/heartbeat"):
+            beats.append(path)
+        return orig_post(path, payload)
+
+    monkeypatch.setattr(main, "backend_post", track_post)
+    run_id = store.create_run(1)
+    assert run_id is not None
+
+    # Resume runs concurrently beside active run without interference
+    main.work_request("REQ-7008", scripted_model())
+    monkeypatch.setattr(backend_main, "notify_agent_resume", lambda rid: None)
+    api.post(
+        "/api/requests/REQ-7008/review",
+        json={"outcome": "approve", "notes": "Ok.", "reviewed_by": "Priya Nair"},
+    )
+    main.resume_request("REQ-7008")
+    assert store.get_request("REQ-7008")["status"] == "decided"
+
+    def slow_queue(*args):
+        time.sleep(0.05)
+        raise RuntimeError("queue failed mid-run")
+
+    monkeypatch.setattr("agent.queue.run_queue", slow_queue)
+    assert work_run(run_id) == "failed"
+    finished = store.get_run(run_id)
+    assert finished is not None
+    assert finished["status"] == "failed"
+    assert "queue failed mid-run" in finished["stop_reason"]
+    assert f"/api/runs/{run_id}/heartbeat" in beats
+
+    with pytest.raises(ValueError, match="not running"):
+        work_run(run_id)
+    assert store.get_run(run_id)["stop_reason"] == finished["stop_reason"]
+    with pytest.raises(ValueError, match="not found"):
+        work_run("RUN-MISSING")

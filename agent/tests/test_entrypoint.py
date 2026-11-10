@@ -150,6 +150,18 @@ def test_postgres_checkpointer_opens_pool_without_prepared_statements(monkeypatc
     assert kwargs["kwargs"]["options"] == "-c search_path=undercover"
 
 
+class _RunResponse:
+    def __init__(self, status_code: int, payload: dict[str, Any]) -> None:
+        self.status_code = status_code
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
 def test_entrypoint_auth_payload_validation_and_retry_readiness(monkeypatch):
     monkeypatch.delenv("UNDERCOVER_API_KEY", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -166,11 +178,11 @@ def test_entrypoint_auth_payload_validation_and_retry_readiness(monkeypatch):
 
         no_auth = client.post(
             "/invocations",
-            json={"operation": "work_run", "run_id": "RUN-1", "cap": 1},
+            json={"operation": "work_run", "run_id": "RUN-1"},
         )
         wrong_auth = client.post(
             "/invocations",
-            json={"operation": "work_run", "run_id": "RUN-1", "cap": 1},
+            json={"operation": "work_run", "run_id": "RUN-1"},
             headers={"Authorization": "Bearer wrong-key"},
         )
         assert no_auth.status_code == 401
@@ -189,7 +201,15 @@ def test_entrypoint_auth_payload_validation_and_retry_readiness(monkeypatch):
         assert (
             client.post(
                 "/invocations",
-                json={"operation": "work_run", "run_id": "RUN-1"},
+                json={"operation": "work_run", "run_id": "RUN-1", "cap": 1},
+                headers=auth,
+            ).status_code
+            == 400
+        )
+        assert (
+            client.post(
+                "/invocations",
+                json={"operation": "work_run"},
                 headers=auth,
             ).status_code
             == 400
@@ -201,6 +221,19 @@ def test_entrypoint_auth_payload_validation_and_retry_readiness(monkeypatch):
                 headers=auth,
             ).status_code
             == 400
+        )
+        monkeypatch.setattr(
+            entrypoint.main,
+            "backend_get",
+            lambda path: _RunResponse(404, {"detail": "not found"}),
+        )
+        assert (
+            client.post(
+                "/invocations",
+                json={"operation": "work_run", "run_id": "RUN-404"},
+                headers=auth,
+            ).status_code
+            == 404
         )
 
 
@@ -257,10 +290,17 @@ def test_entrypoint_on_runtime_fetches_secrets_once_and_reseeds_random(monkeypat
             worked.append((run_id, cap))
             done.set()
 
+        monkeypatch.setattr(
+            entrypoint.main,
+            "backend_get",
+            lambda path: _RunResponse(
+                200, {"run_id": "RUN-RT", "cap": 3, "status": "running"}
+            ),
+        )
         monkeypatch.setattr(entrypoint.queue, "work_run", record)
         no_bearer_on_runtime = client.post(
             "/invocations",
-            json={"operation": "work_run", "run_id": "RUN-RT", "cap": 3},
+            json={"operation": "work_run", "run_id": "RUN-RT"},
         )
         assert no_bearer_on_runtime.status_code == 200
         assert no_bearer_on_runtime.json() == {"accepted": True}
@@ -285,6 +325,13 @@ def test_entrypoint_ping_tracks_running_and_failed_async_tasks(monkeypatch):
         if run_id == "RUN-FAIL":
             raise RuntimeError("boom")
 
+    monkeypatch.setattr(
+        entrypoint.main,
+        "backend_get",
+        lambda path: _RunResponse(
+            200, {"run_id": path.rsplit("/", 1)[-1], "cap": 1, "status": "running"}
+        ),
+    )
     monkeypatch.setattr(entrypoint.queue, "work_run", slow_work)
 
     with TestClient(entrypoint.app) as client:
@@ -292,7 +339,7 @@ def test_entrypoint_ping_tracks_running_and_failed_async_tasks(monkeypatch):
 
         ok = client.post(
             "/invocations",
-            json={"operation": "work_run", "run_id": "RUN-OK", "cap": 1},
+            json={"operation": "work_run", "run_id": "RUN-OK"},
             headers=auth,
         )
         assert ok.json() == {"accepted": True}
@@ -312,7 +359,7 @@ def test_entrypoint_ping_tracks_running_and_failed_async_tasks(monkeypatch):
         finished.clear()
         fail = client.post(
             "/invocations",
-            json={"operation": "work_run", "run_id": "RUN-FAIL", "cap": 1},
+            json={"operation": "work_run", "run_id": "RUN-FAIL"},
             headers=auth,
         )
         assert fail.json() == {"accepted": True}

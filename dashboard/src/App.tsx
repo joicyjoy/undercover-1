@@ -145,6 +145,11 @@ export function App() {
       setMessage(
         error instanceof Error ? error.message : "Something went wrong.",
       );
+      await Promise.all([
+        loadQueue(),
+        loadRun(),
+        selectedId ? loadDetail(selectedId) : Promise.resolve(),
+      ]);
     } finally {
       setBusy(false);
     }

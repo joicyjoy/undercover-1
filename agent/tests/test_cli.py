@@ -5,6 +5,7 @@ import pytest
 from agent import __main__ as cli
 from agent import main
 from agent.tests.stubs import scripted_model
+from backend import agent_service
 from backend import main as backend_main
 
 
@@ -20,10 +21,15 @@ def test_one_named_request_is_worked_from_the_terminal(store, monkeypatch, capsy
 
 
 def test_a_capped_run_is_started_and_waited_for(api, monkeypatch, capsys):
-    def finish_at_once(run_store, run_id, cap):
-        run_store.finish_run(run_id, "finished", f"Worked {cap} requests.")
+    def finish_at_once(payload):
+        run_id = payload["run_id"]
+        cap = backend_main.app.state.store.get_run(run_id)["cap"]
+        backend_main.app.state.store.finish_run(
+            run_id, "finished", f"Worked {cap} requests."
+        )
+        return agent_service.AgentCallResult("accepted")
 
-    monkeypatch.setattr(backend_main, "run_in_background", finish_at_once)
+    monkeypatch.setattr(agent_service, "call_agent", finish_at_once)
     monkeypatch.setattr(sys, "argv", ["agent", "--cap", "3"])
     cli.main()
     assert capsys.readouterr().out.rstrip().endswith("finished: Worked 3 requests.")

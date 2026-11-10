@@ -3,9 +3,15 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "e2e",
   outputDir: "e2e/test-results",
+  workers: 1,
   reporter: "list",
   use: { baseURL: "http://localhost:5173" },
   webServer: [
+    {
+      command: "node e2e/agent_stand_in.js",
+      url: "http://127.0.0.1:8003/ping",
+      reuseExistingServer: true,
+    },
     {
       command:
         "uv run -m backend.seed && uv run -m uvicorn backend.main:app --port 8000",

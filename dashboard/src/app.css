@@ -929,6 +929,24 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.run-stop-reason {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 11px;
+  background: #fdf2f0;
+  border: 1px solid #f2cbc4;
+}
+.run-stop-reason small {
+  color: #a63426;
+  font: 600 9px var(--mono);
+  letter-spacing: 0.07em;
+}
+.run-stop-reason p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink);
+}
 .run-summary {
   margin-top: 14px;
   padding: 14px 16px;

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
@@ -222,23 +222,6 @@ def require_request(store: Store, request_id: str) -> dict[str, Any]:
     if result is None:
         raise HTTPException(status_code=404, detail="Support request not found")
     return result
-
-
-def run_in_background(store: Store, run_id: str, cap: int) -> None:
-    """Hand a run to the agent entrypoint, failing only if it did not take it."""
-    result = agent_service.call_agent(
-        {"operation": "work_run", "run_id": run_id, "cap": cap}
-    )
-    if result.state in ("did_not_take", "refused"):
-        store.finish_run(
-            run_id,
-            "failed",
-            f"The run stopped: the agent service failed ({result.reason})",
-        )
-    elif result.state == "uncertain":
-        logger.warning(
-            "Uncertain whether the agent started run %s: %s", run_id, result.reason
-        )
 
 
 def notify_agent_resume(request_id: str) -> None:
@@ -654,16 +637,39 @@ def hold_payment(request_id: str, hold: HoldInput, request: Request) -> dict[str
     operation_id="start_run",
     dependencies=[Depends(require_support_handler)],
 )
-def start_run(
-    run: RunInput, request: Request, background_tasks: BackgroundTasks
-) -> dict[str, Any]:
+def start_run(run: RunInput, request: Request) -> dict[str, Any]:
     """Start one agent run over the waiting requests, up to its cap."""
     store = store_of(request)
     run_id = store.create_run(run.cap)
     if run_id is None:
-        raise HTTPException(status_code=409, detail="A run is already in progress")
-    background_tasks.add_task(run_in_background, store, run_id, run.cap)
-    return {"run_id": run_id, "cap": run.cap, "status": "running"}
+        active_id = store.active_run_id()
+        detail = (
+            f"Run {active_id} is already in progress"
+            if active_id
+            else "A run is already in progress"
+        )
+        raise HTTPException(status_code=409, detail=detail)
+    outcome = agent_service.call_agent({"operation": "work_run", "run_id": run_id})
+    if outcome.state == "accepted":
+        return {"run_id": run_id, "cap": run.cap, "status": "running"}
+    if outcome.state == "refused":
+        reason = outcome.reason or "The agent refused the run"
+        store.finish_run(run_id, "failed", reason, stop_reason=reason)
+        raise HTTPException(status_code=409, detail=reason)
+    if outcome.state == "did_not_take":
+        reason = f"The run stopped: the agent service failed ({outcome.reason})"
+        store.finish_run(run_id, "failed", reason, stop_reason=reason)
+        raise HTTPException(status_code=502, detail=reason)
+    logger.warning(
+        "Uncertain whether the agent started run %s: %s", run_id, outcome.reason
+    )
+    raise HTTPException(
+        status_code=504,
+        detail=(
+            "The agent did not answer in time. "
+            "Reload the page to see whether the run started."
+        ),
+    )
 
 
 @app.get(
@@ -674,6 +680,34 @@ def start_run(
 def get_current_run(request: Request) -> dict[str, Any] | None:
     """Return the latest run with its to-do list."""
     return store_of(request).current_run()
+
+
+@app.get(
+    "/api/runs/{run_id}",
+    operation_id="get_run",
+    dependencies=[Depends(require_shared_read)],
+)
+def get_run(run_id: str, request: Request) -> dict[str, Any]:
+    """Return one run with its to-do list."""
+    run = store_of(request).get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
+@app.post(
+    "/api/runs/{run_id}/heartbeat",
+    operation_id="run_heartbeat",
+    dependencies=[Depends(require_agent_key)],
+)
+def run_heartbeat(run_id: str, request: Request) -> dict[str, str]:
+    """Record a live heartbeat for an active queue run."""
+    store = store_of(request)
+    if store.get_run(run_id) is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not store.heartbeat_run(run_id):
+        raise HTTPException(status_code=409, detail="Run is not running")
+    return {"run_id": run_id, "status": "running"}
 
 
 @app.put(
@@ -716,7 +750,8 @@ def finish_run(run_id: str, finish: RunFinishInput, request: Request) -> dict[st
     store = store_of(request)
     if not store.is_running(run_id):
         raise HTTPException(status_code=409, detail="Run is not running")
-    store.finish_run(run_id, finish.status, finish.summary)
+    stop_reason = finish.summary if finish.status == "failed" else None
+    store.finish_run(run_id, finish.status, finish.summary, stop_reason=stop_reason)
     return {"run_id": run_id, "status": finish.status}
 
 

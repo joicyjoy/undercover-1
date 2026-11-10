@@ -113,6 +113,7 @@ def test_api_routes_have_operation_ids_and_no_query_inputs():
     assert post_paths == {
         "/api/runs",
         "/api/runs/{run_id}/finish",
+        "/api/runs/{run_id}/heartbeat",
         "/api/runs/{run_id}/todos/{request_id}",
         "/api/requests/{request_id}/steps",
         "/api/requests/{request_id}/refund",

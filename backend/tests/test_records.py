@@ -8,7 +8,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from backend import main
+from backend import agent_service, main
 from backend.context_files import CONTEXT
 from backend.main import app
 from backend.models import Decision
@@ -24,7 +24,11 @@ def client(tmp_path, monkeypatch):
     db_path = str(tmp_path / "records.sqlite3")
     monkeypatch.setenv("SHOPPIE_DATABASE_PATH", db_path)
     monkeypatch.setenv("UNDERCOVER_API_KEY", TEST_API_KEY)
-    monkeypatch.setattr(main, "run_in_background", lambda *args: None)
+    monkeypatch.setattr(
+        agent_service,
+        "call_agent",
+        lambda payload: agent_service.AgentCallResult("accepted"),
+    )
     with TestClient(app) as test_client:
         yield test_client
 

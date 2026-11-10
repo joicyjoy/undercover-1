@@ -43,6 +43,8 @@ DEFAULT_DATABASE_PATH = (
 )
 SCHEMA = "undercover"
 MAX_POOL_SIZE = 2
+STALE_WORK_SECONDS = 300
+STALE_WORK_REASON = "The agent stopped answering"
 MAX_OVERFLOW = 2
 MAX_ATTEMPTS = 2
 STEP_MESSAGES = {
@@ -127,6 +129,15 @@ runs = Table(
     Column("started_at", Text, nullable=False),
     Column("finished_at", Text),
     Column("summary", Text),
+    Column("last_heartbeat_at", Text),
+    Column("stop_reason", Text),
+)
+
+work_gate = Table(
+    "work_gate",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("active_run_id", Text),
 )
 
 run_todos = Table(
@@ -227,21 +238,18 @@ class Store:
                 connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
         metadata.create_all(self.engine)
         with self.engine.begin() as connection:
-            existing_cols = {
-                col["name"]
-                for col in inspect(connection).get_columns("support_requests")
-            }
-            if "sent_back_json" not in existing_cols:
-                connection.execute(
-                    text("ALTER TABLE support_requests ADD COLUMN sent_back_json TEXT")
-                )
-            if "resume_heartbeat_at" not in existing_cols:
-                connection.execute(
-                    text(
-                        "ALTER TABLE support_requests "
-                        "ADD COLUMN resume_heartbeat_at TEXT"
-                    )
-                )
+            self._ensure_schema_columns(connection)
+            gate_row = connection.execute(
+                select(work_gate.c.id).where(work_gate.c.id == 1)
+            ).first()
+            if gate_row is None:
+                active = connection.execute(
+                    select(runs.c.run_id)
+                    .where(runs.c.status == "running")
+                    .order_by(runs.c.started_at.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                connection.execute(insert(work_gate).values(id=1, active_run_id=active))
             for customer in customers:
                 for order in customer["orders"]:
                     safe_order = self.safe_order(order)
@@ -249,15 +257,20 @@ class Store:
                         self._upsert_seed_request(
                             connection, customer, order, request, safe_order
                         )
-            connection.execute(
-                update(runs)
-                .where(runs.c.status == "running")
-                .values(
-                    status="failed",
-                    finished_at=now(),
-                    summary="The run stopped when the service restarted.",
+
+    @staticmethod
+    def _ensure_schema_columns(connection: Any) -> None:
+        inspector = inspect(connection)
+        req_cols = {col["name"] for col in inspector.get_columns("support_requests")}
+        for col_name in ("sent_back_json", "resume_heartbeat_at"):
+            if col_name not in req_cols:
+                connection.execute(
+                    text(f"ALTER TABLE support_requests ADD COLUMN {col_name} TEXT")
                 )
-            )
+        run_cols = {col["name"] for col in inspector.get_columns("runs")}
+        for col_name in ("last_heartbeat_at", "stop_reason"):
+            if col_name not in run_cols:
+                connection.execute(text(f"ALTER TABLE runs ADD COLUMN {col_name} TEXT"))
 
     def _upsert_seed_request(
         self,
@@ -892,30 +905,118 @@ class Store:
             and same_reviewer
         )
 
+    @staticmethod
+    def _is_stale_run(started_at: str, last_heartbeat_at: str | None) -> bool:
+        latest = datetime.fromisoformat(started_at)
+        if last_heartbeat_at:
+            latest = max(latest, datetime.fromisoformat(last_heartbeat_at))
+        return (datetime.now(UTC) - latest).total_seconds() >= STALE_WORK_SECONDS
+
+    def _clear_stale_gate_if_needed(self, connection: Any) -> bool:
+        """Lock work_gate row 1 and clear it if its run stopped or timed out."""
+        connection.execute(
+            update(work_gate)
+            .where(work_gate.c.id == 1)
+            .values(active_run_id=work_gate.c.active_run_id)
+        )
+        active_id = connection.execute(
+            select(work_gate.c.active_run_id).where(work_gate.c.id == 1)
+        ).scalar_one_or_none()
+        if not active_id:
+            return True
+        row = (
+            connection.execute(
+                select(
+                    runs.c.run_id,
+                    runs.c.status,
+                    runs.c.started_at,
+                    runs.c.last_heartbeat_at,
+                ).where(runs.c.run_id == active_id)
+            )
+            .mappings()
+            .first()
+        )
+        if row is not None and row["status"] == "running":
+            if not self._is_stale_run(row["started_at"], row["last_heartbeat_at"]):
+                return False
+            connection.execute(
+                update(runs)
+                .where(runs.c.run_id == active_id, runs.c.status == "running")
+                .values(
+                    status="failed",
+                    finished_at=now(),
+                    summary=STALE_WORK_REASON,
+                    stop_reason=STALE_WORK_REASON,
+                )
+            )
+        connection.execute(
+            update(work_gate).where(work_gate.c.id == 1).values(active_run_id=None)
+        )
+        return True
+
     def create_run(self, cap: int) -> str | None:
-        """Start a run record unless another run is still running."""
+        """Atomically claim the work gate and commit a new running run."""
         run_id = f"RUN-{uuid4().hex[:8].upper()}"
         with self.engine.begin() as connection:
-            running = connection.execute(
-                select(runs.c.run_id).where(runs.c.status == "running")
-            ).first()
-            if running:
+            if not self._clear_stale_gate_if_needed(connection):
+                return None
+            claimed = connection.execute(
+                update(work_gate)
+                .where(work_gate.c.id == 1, work_gate.c.active_run_id.is_(None))
+                .values(active_run_id=run_id)
+            )
+            if claimed.rowcount != 1:
                 return None
             connection.execute(
                 insert(runs).values(
-                    run_id=run_id, cap=cap, status="running", started_at=now()
+                    run_id=run_id,
+                    cap=cap,
+                    status="running",
+                    started_at=now(),
                 )
             )
         return run_id
 
-    def finish_run(self, run_id: str, status: str, summary: str) -> None:
-        """Close a run with its summary."""
+    def active_run_id(self) -> str | None:
+        """Return the currently gated run_id when a run holds the lock."""
+        with self.engine.begin() as connection:
+            return connection.execute(
+                select(work_gate.c.active_run_id).where(work_gate.c.id == 1)
+            ).scalar_one_or_none()
+
+    def finish_run(
+        self,
+        run_id: str,
+        status: str,
+        summary: str,
+        stop_reason: str | None = None,
+    ) -> None:
+        """Close one run with its summary and release the work gate if it holds it."""
+        values: dict[str, Any] = {
+            "status": status,
+            "summary": summary,
+            "finished_at": now(),
+            "stop_reason": stop_reason,
+        }
         with self.engine.begin() as connection:
             connection.execute(
-                update(runs)
-                .where(runs.c.run_id == run_id)
-                .values(status=status, summary=summary, finished_at=now())
+                update(runs).where(runs.c.run_id == run_id).values(**values)
             )
+            connection.execute(
+                update(work_gate)
+                .where(work_gate.c.id == 1, work_gate.c.active_run_id == run_id)
+                .values(active_run_id=None)
+            )
+
+    def heartbeat_run(self, run_id: str) -> bool:
+        """Record a live heartbeat for a running run."""
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                update(runs)
+                .where(runs.c.run_id == run_id, runs.c.status == "running")
+                .values(last_heartbeat_at=now())
+            )
+            return result.rowcount == 1
 
     def is_running(self, run_id: str) -> bool:
         """Report whether a run is still running."""
@@ -924,6 +1025,16 @@ class Store:
                 select(runs.c.status).where(runs.c.run_id == run_id)
             ).scalar_one_or_none()
         return status == "running"
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        """Return one run with its to-do list, or None if not found."""
+        with self.engine.begin() as connection:
+            run = (
+                connection.execute(select(runs).where(runs.c.run_id == run_id))
+                .mappings()
+                .first()
+            )
+            return self._attach_todos(connection, run)
 
     def current_run(self) -> dict[str, Any] | None:
         """Return the latest run with its to-do list."""
@@ -935,21 +1046,25 @@ class Store:
                 .mappings()
                 .first()
             )
-            if run is None:
-                return None
-            todos = (
-                connection.execute(
-                    select(
-                        run_todos.c.request_id,
-                        run_todos.c.title,
-                        run_todos.c.status,
-                    )
-                    .where(run_todos.c.run_id == run["run_id"])
-                    .order_by(run_todos.c.position)
+            return self._attach_todos(connection, run)
+
+    @staticmethod
+    def _attach_todos(connection: Any, run: Any) -> dict[str, Any] | None:
+        if run is None:
+            return None
+        todos = (
+            connection.execute(
+                select(
+                    run_todos.c.request_id,
+                    run_todos.c.title,
+                    run_todos.c.status,
                 )
-                .mappings()
-                .all()
+                .where(run_todos.c.run_id == run["run_id"])
+                .order_by(run_todos.c.position)
             )
+            .mappings()
+            .all()
+        )
         return {**dict(run), "todos": [dict(todo) for todo in todos]}
 
     def write_todos(self, run_id: str, todos: list[dict[str, str]]) -> None:

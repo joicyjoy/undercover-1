@@ -462,7 +462,6 @@ def test_agent_service_resumes_signed_off_request_and_runs_queue(
     api, store, monkeypatch
 ):
     monkeypatch.setattr(main, "model", scripted_model)
-    monkeypatch.setattr(backend_main, "run_in_background", lambda *args: None)
     main.work_request("REQ-7008", scripted_model())
 
     with StarletteTestClient(entrypoint.app) as agent_client:
@@ -541,6 +540,8 @@ def test_agent_service_resumes_signed_off_request_and_runs_queue(
 
         worked: list[tuple[str, int]] = []
         work_done = main.threading.Event()
+        run_id = store.create_run(2)
+        assert run_id is not None
 
         def record_work(rid: str, cap: int) -> None:
             worked.append((rid, cap))
@@ -549,17 +550,25 @@ def test_agent_service_resumes_signed_off_request_and_runs_queue(
         monkeypatch.setattr(entrypoint.queue, "work_run", record_work)
         refused = agent_client.post(
             "/invocations",
-            json={"operation": "work_run", "run_id": "RUN-1", "cap": 2},
+            json={"operation": "work_run", "run_id": run_id},
         )
         accepted = agent_client.post(
             "/invocations",
-            json={"operation": "work_run", "run_id": "RUN-1", "cap": 2},
+            json={"operation": "work_run", "run_id": run_id},
             headers=auth_headers,
         )
         assert refused.status_code == 401
         assert accepted.json() == {"accepted": True}
         assert work_done.wait(timeout=5)
-        assert worked == [("RUN-1", 2)]
+        assert worked == [(run_id, 2)]
+
+        # Run ended on backend -> agent refuses working it
+        store.finish_run(run_id, "finished", "Done.")
+        assert agent_client.post(
+            "/invocations",
+            json={"operation": "work_run", "run_id": run_id},
+            headers=auth_headers,
+        ).json() == {"refused": f"Run {run_id} is not running"}
 
 
 def test_send_back_resumes_paused_thread_resets_call_allowance_and_redecides(

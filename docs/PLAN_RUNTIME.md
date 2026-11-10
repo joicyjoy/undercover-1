@@ -194,11 +194,11 @@ Move concurrency locking and stale-work recovery fully to the backend database, 
 
 ### Success criteria
 
-- [ ] Backend concurrency & lifecycle tests verify: second start refused (`409` naming active run) while a run is running; two simultaneous `create_run` threads allow only one winner on both SQLite and SQL locking semantics; a run quiet for > 5 minutes is marked failed with `"The agent stopped answering"` (`stop_reason`) so a new run starts; a start the agent refuses/fails to connect to undoes the run with its reason; a read timeout leaves the run `"running"`; a failed run stops only its own `run_id`; and `resume_request` runs beside an active run.
-- [ ] End-to-end Playwright suite passes using the AgentCore `/invocations` & `/ping` stand-in with the real backend creating runs and processing send-backs.
-- [ ] `npm run check` passes completely with `.env` moved out of the way (zero live model, AWS, or Postgres calls), and Lambda zip build size with `boto3` stays under 50 MB.
-- [ ] Live verification passes after one `npm run seed` on `npm run dev` (capped queue run, duplicate start refused, one request sent back with a note and re-decided via Playwright MCP, another signed off, and `runtime.main` standalone health check on port `8080`).
-- [ ] `docs/SPEC.md`, `docs/TECH_STACK.md`, `docs/PROCESS.md`, `docs/CODE_STANDARDS.md`, and `docs/STATUS.md` are updated and accurate; `git diff --check` passes cleanly.
+- [x] Backend concurrency & lifecycle tests verify: second start refused (`409` naming active run) while a run is running; two simultaneous `create_run` threads allow only one winner on both SQLite and SQL locking semantics; a run quiet for > 5 minutes is marked failed with `"The agent stopped answering"` (`stop_reason`) so a new run starts; a start the agent refuses/fails to connect to undoes the run with its reason; a read timeout leaves the run `"running"`; a failed run stops only its own `run_id`; and `resume_request` runs beside an active run.
+- [x] End-to-end Playwright suite passes using the AgentCore `/invocations` & `/ping` stand-in with the real backend creating runs and processing send-backs.
+- [x] `npm run check` passes completely with `.env` moved out of the way (zero live model, AWS, or Postgres calls), and Lambda zip build size with `boto3` stays under 50 MB.
+- [x] Live verification passes after one `npm run seed` on `npm run dev` (capped queue run, duplicate start refused, one request sent back with a note and re-decided via Playwright MCP, another signed off, and `runtime.main` standalone health check on port `8080`).
+- [x] `docs/SPEC.md`, `docs/TECH_STACK.md`, `docs/PROCESS.md`, `docs/CODE_STANDARDS.md`, and `docs/STATUS.md` are updated and accurate; `git diff --check` passes cleanly.
 
 ---
 

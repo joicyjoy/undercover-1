@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, AgentState, hook_config
 from langchain_core.language_models import BaseChatModel
@@ -206,13 +207,22 @@ def run_queue(
 
 def work_run(
     run_id: str,
-    cap: int,
+    cap: int | None = None,
     llm: BaseChatModel | None = None,
     request_model: Callable[[], BaseChatModel] | None = None,
 ) -> str:
-    """Work a run and report how it ended to the backend's finish_run route."""
+    """Work a running run, send heartbeats, and report how it ended."""
+    run = main.backend_get(f"/api/runs/{run_id}")
+    if run.status_code == httpx.codes.NOT_FOUND:
+        raise ValueError(f"Run {run_id} not found")
+    run.raise_for_status()
+    data = run.json()
+    if data.get("status") != "running":
+        raise ValueError(f"Run {run_id} is not running")
+    resolved_cap = int(data["cap"]) if cap is None else cap
     try:
-        summary = run_queue(run_id, cap, llm, request_model)
+        with main.heartbeat(f"/api/runs/{run_id}/heartbeat"):
+            summary = run_queue(run_id, resolved_cap, llm, request_model)
         status = "finished"
     except Exception as error:
         summary = f"The run stopped: {error}"
