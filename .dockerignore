@@ -1,0 +1,54 @@
+# Version control, editors, and local secrets
+.git
+.gitignore
+.env
+.env.*
+.vscode
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+
+# Virtual envs, caches, and build artifacts
+.venv
+venv
+node_modules
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+dashboard/dist
+dashboard/coverage
+test-results
+playwright-report
+cdk.out
+.bedrock_agentcore
+
+# Local databases and dev/test outputs
+*.db
+*.sqlite
+*.sqlite3
+*.zip
+lambda_package
+
+# Tests, course notebooks, guides, and AWS-specific packaging
+agent/tests
+backend/tests
+context/tests
+data/evals
+e2e
+labs
+guides
+assets
+community_contributions
+agentcore
+runtime
+setup
+monitor.py
+playwright.config.ts
+eslint.config.js
+api_rules.py
+lefthook.yml

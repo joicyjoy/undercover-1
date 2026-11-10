@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -46,6 +47,7 @@ MAX_POOL_SIZE = 2
 STALE_WORK_SECONDS = 300
 STALE_WORK_REASON = "The agent stopped answering"
 MAX_OVERFLOW = 2
+POOLER_PORT = 6432
 MAX_ATTEMPTS = 2
 STEP_MESSAGES = {
     "started": "The Shoppie Agent started reviewing this request.",
@@ -187,18 +189,23 @@ def build_engine(
     """Create a SQLAlchemy engine for Postgres (with undercover schema) or SQLite."""
     if database_url:
         options = f"-c search_path={SCHEMA}"
+        connect_args: dict[str, Any] = {"options": options}
+        uses_pooler = urlparse(database_url).port == POOLER_PORT
         if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+            connect_args["prepare_threshold"] = None
             engine = create_engine(
                 sqlalchemy_postgres_url(database_url),
                 poolclass=NullPool,
-                connect_args={"options": options, "prepare_threshold": None},
+                connect_args=connect_args,
             )
             return engine, True
+        if uses_pooler:
+            connect_args["prepare_threshold"] = None
         engine = create_engine(
             sqlalchemy_postgres_url(database_url),
             pool_size=MAX_POOL_SIZE,
             max_overflow=MAX_OVERFLOW,
-            connect_args={"options": options},
+            connect_args=connect_args,
         )
         return engine, True
     database_path.parent.mkdir(parents=True, exist_ok=True)

@@ -172,6 +172,18 @@ def test_postgres_engine_uses_undercover_schema_and_caps_connections(
     }
     monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME")
 
+    captured.clear()
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://postgres:pw@shoppie.postgres.database.azure.com:6432/postgres?sslmode=require",
+    )
+    Store()
+    assert captured["pool_size"] == MAX_POOL_SIZE
+    assert captured["connect_args"] == {
+        "options": f"-c search_path={SCHEMA}",
+        "prepare_threshold": None,
+    }
+
     monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(tmp_path / "seeded.sqlite3"))
     monkeypatch.setattr("backend.seed.load_dotenv", lambda **kwargs: False)
     monkeypatch.setattr(

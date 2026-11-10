@@ -1,0 +1,10 @@
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+WORKDIR /app
+ENV UV_LINK_MODE=copy UV_NO_DEV=1 HOST=0.0.0.0 PORT=8006
+COPY pyproject.toml uv.lock .python-version ./
+RUN uv sync --frozen --no-install-project --only-group context
+COPY context/ context/
+RUN useradd --create-home appuser && chown -R appuser:appuser /app
+USER appuser
+EXPOSE 8006
+CMD [".venv/bin/python", "-m", "context"]

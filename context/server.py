@@ -2,6 +2,7 @@
 streamable HTTP at /mcp, stateless and answering in JSON. handler is its entry point
 on AWS Lambda, behind a Function URL."""
 
+import os
 from typing import Annotated, Any
 
 from mangum import Mangum
@@ -9,6 +10,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import StringConstraints
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from context import files
 
@@ -18,21 +21,39 @@ PORT = 8006
 # A search needs a word or phrase to look for.
 Query = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 READ_ONLY = ToolAnnotations(readOnlyHint=True)
-# A Function URL's host would be refused as a DNS rebinding attack, and the
-# Function URL's IAM auth guards the server there.
+# Cloud hosts (Azure Container Apps, Lambda Function URLs) pass internal or HTTPS
+# Host headers that FastMCP's localhost DNS-rebinding check would reject.
 ON_LAMBDA = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
 
-def build_server(security: TransportSecuritySettings | None = None) -> FastMCP:
-    """Make the server with its seven tools, on the laptop's port, with FastMCP's
-    protection for a local host unless the security given says otherwise."""
+def build_server(
+    security: TransportSecuritySettings | None = None,
+    host: str | None = None,
+    port: int | None = None,
+) -> FastMCP:
+    """Make the server with its seven tools, on the configured host/port."""
+    resolved_host = host or os.getenv("HOST", "127.0.0.1")
+    resolved_port = port if port is not None else int(os.getenv("PORT", str(PORT)))
+    resolved_security = security
+    if resolved_security is None and (
+        resolved_host != "127.0.0.1"
+        or os.getenv("CONTAINER_APP_NAME")
+        or os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+    ):
+        resolved_security = ON_LAMBDA
     server = FastMCP(
         NAME,
-        port=PORT,
+        host=resolved_host,
+        port=resolved_port,
         stateless_http=True,
         json_response=True,
-        transport_security=security,
+        transport_security=resolved_security,
     )
+
+    @server.custom_route("/health", methods=["GET"])
+    async def health_check(_request: Request) -> JSONResponse:
+        """Check that the context server container is healthy."""
+        return JSONResponse({"status": "ok"})
 
     @server.tool(annotations=READ_ONLY)
     def lookup_term(term: str) -> dict[str, Any]:

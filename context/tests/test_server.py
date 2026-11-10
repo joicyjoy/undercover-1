@@ -4,6 +4,7 @@ handler answers a Function URL's requests, one after another in one process."""
 import json
 from typing import Any
 
+import httpx
 import pytest
 
 from agent.mcp_tools import McpTools
@@ -92,5 +93,20 @@ def test_a_search_with_nothing_to_look_for_is_refused(tool, query):
 def test_local_context_server_answers_tools_list():
     app = build_server().streamable_http_app()
     with serving(app) as base_url:
+        health = httpx.get(f"{base_url}/health")
+        assert health.status_code == 200
+        assert health.json() == {"status": "ok"}
         tools = McpTools("Local context", f"{base_url}/mcp")
+        assert set(tools.tools.keys()) == TOOLS
+
+
+def test_container_context_server_accepts_internal_fqdn_hosts():
+    app = build_server(host="shoppie-context").streamable_http_app()
+    with serving(app) as base_url:
+        response = httpx.get(
+            f"{base_url}/health",
+            headers={"Host": "shoppie-context.internal.azurecontainerapps.io"},
+        )
+        assert response.status_code == 200
+        tools = McpTools("Azure container context", f"{base_url}/mcp")
         assert set(tools.tools.keys()) == TOOLS
