@@ -33,9 +33,21 @@ az deployment group create -g "$RG" -f azure/main.bicep \
      modelName=""
 
 ACR=$(az deployment group show -g "$RG" -n main --query properties.outputs.acrName.value -o tsv)
-az acr build -r "$ACR" -f azure/Dockerfile.backend -t shoppie-backend:latest .
-az acr build -r "$ACR" -f azure/Dockerfile.agent -t shoppie-agent:latest .
-az acr build -r "$ACR" -f azure/Dockerfile.context -t shoppie-context:latest .
+ACR_LOGIN=$(az deployment group show -g "$RG" -n main --query properties.outputs.acrLoginServer.value -o tsv)
+
+# Push images built locally for linux/amd64 (works even when ACR Tasks is restricted):
+az acr login -n "$ACR"
+docker build --platform linux/amd64 -f azure/Dockerfile.context -t "$ACR_LOGIN/shoppie-context:latest" .
+docker build --platform linux/amd64 -f azure/Dockerfile.backend -t "$ACR_LOGIN/shoppie-backend:latest" .
+docker build --platform linux/amd64 -f azure/Dockerfile.agent   -t "$ACR_LOGIN/shoppie-agent:latest" .
+docker push "$ACR_LOGIN/shoppie-context:latest"
+docker push "$ACR_LOGIN/shoppie-backend:latest"
+docker push "$ACR_LOGIN/shoppie-agent:latest"
+
+# Or, if ACR Tasks (`az acr build`) is permitted on your subscription:
+# az acr build -r "$ACR" -f azure/Dockerfile.backend -t shoppie-backend:latest .
+# az acr build -r "$ACR" -f azure/Dockerfile.agent -t shoppie-agent:latest .
+# az acr build -r "$ACR" -f azure/Dockerfile.context -t shoppie-context:latest .
 
 az deployment group create -g "$RG" -f azure/main.bicep \
   -p deployApps=true \
@@ -62,9 +74,15 @@ az deployment group create -g $RG -f azure/main.bicep `
      modelName=""
 
 $ACR = az deployment group show -g $RG -n main --query properties.outputs.acrName.value -o tsv
-az acr build -r $ACR -f azure/Dockerfile.backend -t shoppie-backend:latest .
-az acr build -r $ACR -f azure/Dockerfile.agent -t shoppie-agent:latest .
-az acr build -r $ACR -f azure/Dockerfile.context -t shoppie-context:latest .
+$ACR_LOGIN = az deployment group show -g $RG -n main --query properties.outputs.acrLoginServer.value -o tsv
+
+az acr login -n $ACR
+docker build --platform linux/amd64 -f azure/Dockerfile.context -t "$ACR_LOGIN/shoppie-context:latest" .
+docker build --platform linux/amd64 -f azure/Dockerfile.backend -t "$ACR_LOGIN/shoppie-backend:latest" .
+docker build --platform linux/amd64 -f azure/Dockerfile.agent   -t "$ACR_LOGIN/shoppie-agent:latest" .
+docker push "$ACR_LOGIN/shoppie-context:latest"
+docker push "$ACR_LOGIN/shoppie-backend:latest"
+docker push "$ACR_LOGIN/shoppie-agent:latest"
 
 az deployment group create -g $RG -f azure/main.bicep `
   -p deployApps=true `
