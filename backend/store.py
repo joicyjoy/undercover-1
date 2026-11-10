@@ -22,6 +22,7 @@ from sqlalchemy import (
     delete,
     func,
     insert,
+    inspect,
     select,
     text,
     update,
@@ -55,6 +56,7 @@ STEP_MESSAGES = {
     "preparing_recommendation": (
         "The agent prepared a recommendation for support review."
     ),
+    "sent_back": "A support reviewer sent the recommendation back with a note.",
     "signed_off": "A support agent reviewed and signed off on the request.",
     "completed": "The Shoppie Agent recorded the confirmed resolution.",
     "error": "This attempt failed; the request is back in the queue to be tried again.",
@@ -95,6 +97,8 @@ support_requests = Table(
     Column("order_json", Text, nullable=False),
     Column("recommendation_json", Text),
     Column("review_json", Text),
+    Column("sent_back_json", Text),
+    Column("resume_heartbeat_at", Text),
     Column("attempts", Integer, nullable=False, default=0),
 )
 
@@ -223,6 +227,21 @@ class Store:
                 connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
         metadata.create_all(self.engine)
         with self.engine.begin() as connection:
+            existing_cols = {
+                col["name"]
+                for col in inspect(connection).get_columns("support_requests")
+            }
+            if "sent_back_json" not in existing_cols:
+                connection.execute(
+                    text("ALTER TABLE support_requests ADD COLUMN sent_back_json TEXT")
+                )
+            if "resume_heartbeat_at" not in existing_cols:
+                connection.execute(
+                    text(
+                        "ALTER TABLE support_requests "
+                        "ADD COLUMN resume_heartbeat_at TEXT"
+                    )
+                )
             for customer in customers:
                 for order in customer["orders"]:
                     safe_order = self.safe_order(order)
@@ -342,6 +361,8 @@ class Store:
             support_requests.c.queue_status,
             support_requests.c.recommendation_json,
             support_requests.c.review_json,
+            support_requests.c.sent_back_json,
+            support_requests.c.resume_heartbeat_at,
             support_requests.c.attempts,
         ).order_by(support_requests.c.created_at, support_requests.c.request_id)
         with self.engine.begin() as connection:
@@ -358,19 +379,21 @@ class Store:
                 "attempts": row["attempts"],
                 "recommendation": self.decode(row["recommendation_json"]),
                 "review": self.decode(row["review_json"]),
+                "sent_back": self.decode(row["sent_back_json"]) or [],
+                "resume_heartbeat_at": row["resume_heartbeat_at"],
             }
             for row in rows
         ]
 
     def list_waiting(self) -> list[dict[str, str]]:
-        """Return the id, type and creation time of each waiting request."""
+        """Return the id, type and creation time of each waiting or sent-back item."""
         query = (
             select(
                 support_requests.c.request_id,
                 support_requests.c.request_type,
                 support_requests.c.created_at,
             )
-            .where(support_requests.c.queue_status == "waiting")
+            .where(support_requests.c.queue_status.in_(["waiting", "sent_back"]))
             .order_by(support_requests.c.created_at, support_requests.c.request_id)
         )
         with self.engine.begin() as connection:
@@ -435,6 +458,8 @@ class Store:
             "attempts": row["attempts"],
             "recommendation": self.decode(row["recommendation_json"]),
             "review": self.decode(row["review_json"]),
+            "sent_back": self.decode(row["sent_back_json"]) or [],
+            "resume_heartbeat_at": row["resume_heartbeat_at"],
             "steps": formatted_steps,
         }
 
@@ -594,11 +619,108 @@ class Store:
                 .where(support_requests.c.request_id == request_id)
                 .values(
                     recommendation_json=json.dumps(recommendation),
+                    resume_heartbeat_at=None,
                     queue_status="waiting_for_agent_review",
                 )
             )
             self._insert_step(connection, request_id, "preparing_recommendation")
         return True
+
+    def send_back_request(self, request_id: str, note: str, sent_back_by: str) -> bool:
+        """Archive the recommendation with the reviewer note and mark sent_back."""
+        with self.engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(
+                        support_requests.c.queue_status,
+                        support_requests.c.recommendation_json,
+                        support_requests.c.sent_back_json,
+                    ).where(support_requests.c.request_id == request_id)
+                )
+                .mappings()
+                .first()
+            )
+            if row is None or row["queue_status"] != "waiting_for_agent_review":
+                return False
+            existing_rec = self.decode(row["recommendation_json"])
+            if existing_rec is None:
+                return False
+            history = self.decode(row["sent_back_json"]) or []
+            history.append(
+                {
+                    "decision": existing_rec,
+                    "note": note,
+                    "sent_back_by": sent_back_by,
+                    "sent_back_at": now(),
+                }
+            )
+            result = connection.execute(
+                update(support_requests)
+                .where(
+                    support_requests.c.request_id == request_id,
+                    support_requests.c.queue_status == "waiting_for_agent_review",
+                )
+                .values(
+                    sent_back_json=json.dumps(history),
+                    recommendation_json=None,
+                    review_json=None,
+                    resume_heartbeat_at=None,
+                    queue_status="sent_back",
+                )
+            )
+            if result.rowcount != 1:
+                return False
+            connection.execute(
+                delete(calculations).where(calculations.c.request_id == request_id)
+            )
+            self._insert_step(
+                connection,
+                request_id,
+                "sent_back",
+                f"Sent back by {sent_back_by}: {note}",
+            )
+        return True
+
+    def take_sent_back(
+        self, request_id: str, owner: Literal["resume", "run"]
+    ) -> int | None:
+        """Atomically move a sent_back request into progress for the first caller."""
+        heartbeat = now() if owner == "resume" else None
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                update(support_requests)
+                .where(
+                    support_requests.c.request_id == request_id,
+                    support_requests.c.queue_status == "sent_back",
+                )
+                .values(
+                    queue_status="in_progress",
+                    resume_heartbeat_at=heartbeat,
+                )
+            )
+            if result.rowcount != 1:
+                return None
+            attempts = int(
+                connection.execute(
+                    select(support_requests.c.attempts).where(
+                        support_requests.c.request_id == request_id
+                    )
+                ).scalar_one()
+            )
+        return attempts + 1
+
+    def heartbeat_request(self, request_id: str) -> bool:
+        """Record a live resume heartbeat on an in-progress request."""
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                update(support_requests)
+                .where(
+                    support_requests.c.request_id == request_id,
+                    support_requests.c.queue_status == "in_progress",
+                )
+                .values(resume_heartbeat_at=now())
+            )
+        return result.rowcount == 1
 
     def hold_request(self, request_id: str, reason: str) -> bool:
         """Hold an approved request whose payment was refused by the Gateway."""
@@ -654,6 +776,7 @@ class Store:
                     attempts=next_attempts,
                     queue_status="waiting_for_agent_review" if exhausted else "waiting",
                     recommendation_json=None,
+                    resume_heartbeat_at=None,
                 )
             )
             self._insert_step(
@@ -743,6 +866,7 @@ class Store:
                 .where(support_requests.c.request_id == request_id)
                 .values(
                     review_json=json.dumps(review),
+                    resume_heartbeat_at=None,
                     queue_status="decided",
                 )
             )

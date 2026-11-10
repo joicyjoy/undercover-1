@@ -68,6 +68,14 @@ function StepBody({ step }: Readonly<{ step: RequestStep }>) {
       </div>
     );
   }
+  if (step.stage === "sent_back") {
+    return (
+      <div className="step-marked">
+        <span className="step-label">Sent back</span>{" "}
+        <span className="step-text">{step.message}</span>
+      </div>
+    );
+  }
   if (step.stage === "refusal") {
     return (
       <p>

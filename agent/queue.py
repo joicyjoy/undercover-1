@@ -1,7 +1,9 @@
 """The Shoppie Agent's queue agent: plans a run and hands each request to a subagent."""
 
+import contextlib
 import threading
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain.agents import create_agent
@@ -16,6 +18,7 @@ from agent.instructions import QUEUE_INSTRUCTIONS
 from agent.models import TodoItem
 
 MAX_RETURNS = 3
+RESUME_ACTIVE_SECONDS = 300
 TODO_FOR_WORK = {
     "done": "done",
     "waiting": "to_do",
@@ -50,6 +53,17 @@ class MissedRequestCheck(AgentMiddleware):
         return {"messages": [HumanMessage(reminder)], "jump_to": "model"}
 
 
+def has_active_resume(item: dict[str, Any]) -> bool:
+    """Report whether an in-progress request has a resume heartbeat within 5 minutes."""
+    beat = item.get("resume_heartbeat_at")
+    if not beat:
+        return False
+    with contextlib.suppress(ValueError):
+        age = (datetime.now(UTC) - datetime.fromisoformat(str(beat))).total_seconds()
+        return age < RESUME_ACTIVE_SECONDS
+    return False
+
+
 def resume_in_progress(
     run_id: str,
     cap: int,
@@ -69,6 +83,8 @@ def resume_in_progress(
                 )
             continue
         if item["status"] != "in_progress":
+            continue
+        if has_active_resume(item):
             continue
         llm = request_model() if request_model else None
         if item.get("review") is not None:

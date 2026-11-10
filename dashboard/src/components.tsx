@@ -1,5 +1,3 @@
-import { useState } from "react";
-import type { SyntheticEvent } from "react";
 import type {
   Outcome,
   QueueItem,
@@ -13,12 +11,14 @@ import { formatDate, formatMoney, humanize } from "./format";
 import { CalculationTable } from "./ContextUsed";
 
 export { CalculationTable, ContextUsed } from "./ContextUsed";
+export { ActionPanel, SentBackHistory } from "./DecisionAndActions";
 export { ProgressCard } from "./ProgressCard";
 
 const statusLabels: Record<QueueStatus, string> = {
   waiting: "Waiting",
   in_progress: "In progress",
   waiting_for_agent_review: "Needs review",
+  sent_back: "Sent back",
   decided: "Decided",
 };
 const outcomeLabels: Record<Outcome, string> = {
@@ -42,12 +42,6 @@ const reviewedLabels: Record<Outcome, string> = {
   approve: "Approved",
   decline: "Declined",
   request_information: "Info requested",
-};
-const actionHeadings: Record<QueueStatus, string> = {
-  waiting: "Waiting to be processed",
-  in_progress: "The agent is reviewing this request",
-  waiting_for_agent_review: "Your review is required",
-  decided: "Review complete",
 };
 
 export function QueueBadge({ item }: Readonly<{ item: QueueItem }>) {
@@ -94,7 +88,7 @@ export function QueuePanel({
   onRefresh: () => void;
 }>) {
   const openCount = items.filter((i) =>
-    ["waiting", "in_progress"].includes(i.status),
+    ["waiting", "in_progress", "sent_back"].includes(i.status),
   ).length;
   const reviewCount = items.filter(
     (i) => i.status === "waiting_for_agent_review",
@@ -338,91 +332,6 @@ export function RecommendationCard({
         </p>
       )}
     </article>
-  );
-}
-
-export function ActionPanel({
-  detail,
-  busy,
-  onReview,
-}: Readonly<{
-  detail: RequestDetail;
-  busy: boolean;
-  onReview: (outcome: Outcome, notes: string, reviewedBy: string) => void;
-}>) {
-  const [outcome, setOutcome] = useState<Outcome>("approve");
-  const [notes, setNotes] = useState("");
-  const [reviewedBy, setReviewedBy] = useState("");
-  const onSubmit = (event: SyntheticEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    onReview(outcome, notes, reviewedBy.trim());
-  };
-  return (
-    <div className="action-panel panel">
-      <div className="action-copy">
-        <p className="eyebrow">SUPPORT SIGN-OFF</p>
-        <strong>
-          {detail.status === "in_progress" && detail.review
-            ? "The agent is completing this reviewed request"
-            : actionHeadings[detail.status]}
-        </strong>
-        <p>
-          Recommendations support your decision. No customer or order action is
-          performed here.
-        </p>
-      </div>
-      {detail.status === "waiting_for_agent_review" && (
-        <form className="review-form" onSubmit={onSubmit}>
-          <label>
-            Reviewed outcome
-            <select
-              value={outcome}
-              onChange={(e) => {
-                setOutcome(e.target.value as Outcome);
-              }}
-            >
-              {Object.entries(outcomeLabels).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Reviewed by
-            <input
-              type="text"
-              required
-              value={reviewedBy}
-              onChange={(e) => {
-                setReviewedBy(e.target.value);
-              }}
-              placeholder="Your name"
-            />
-          </label>
-          <label className="notes-field">
-            <span>
-              Notes <span className="optional">(optional)</span>
-            </span>
-            <textarea
-              value={notes}
-              onChange={(e) => {
-                setNotes(e.target.value);
-              }}
-              placeholder="Add context for your decision…"
-              rows={2}
-            />
-          </label>
-          <button
-            className="primary-button"
-            disabled={busy || !reviewedBy.trim()}
-            type="submit"
-          >
-            Record support review
-          </button>
-        </form>
-      )}
-    </div>
   );
 }
 

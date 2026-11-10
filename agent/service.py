@@ -53,19 +53,14 @@ def health() -> dict[str, str]:
 def resume_request(
     request_id: str, background_tasks: BackgroundTasks
 ) -> dict[str, Any]:
-    """Resume a paused support request thread after support sign-off."""
+    """Resume a paused or sent-back support request thread."""
     try:
         prepared = main.prepare_resume(request_id)
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    background_tasks.add_task(
-        main.resume_request_thread,
-        request_id,
-        prepared["thread_id"],
-        prepared["review"],
-    )
+    background_tasks.add_task(main.execute_resume, prepared)
     return {"request_id": request_id, "status": "accepted"}
 
 

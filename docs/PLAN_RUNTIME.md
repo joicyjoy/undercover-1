@@ -101,10 +101,10 @@ Implement the full send-back workflow across backend, agent graph, queue runner,
 
 ### Success criteria
 
-- [ ] Backend tests in `backend/tests/` cover `send_back` refusals (`409` when not waiting for review, `left_for_support`, `Security check`, evaluation copy; `422` when note empty or > 1,000 chars or blank sender), atomic race protection between concurrent `review` and `send_back`, archiving multiple sent-back decisions, `/api/agent/openapi.json` remaining at 6 operations, `take_sent_back` single-winner atomicity, and `POST /api/requests/{id}/send_back` returning the updated request when agent resume fails/times out.
-- [ ] Agent tests in `agent/tests/` verify: (a) a resumed send-back resets decision state and model call budget, passes the note as feedback, and reaches a new approval or refusal/referral decision; (b) a request can be sent back more than once; (c) concurrent `resume` + queue run takes a sent-back request only once; (d) a queue run skips an `in_progress` request whose `resume_heartbeat_at` is under 5 minutes old; and (e) a send-back missed by the agent stays `"sent_back"` and is worked by the next queue run (resuming its paused thread with the note).
-- [ ] Vitest tests in `dashboard/src/` verify `"Sent back"` badge/status, waiting-for-next-run copy, displaying previous sent-back decisions + notes + reviewer/timestamp, `sent_back` timeline steps, and submitting the Send back form (validating required 1–1,000 char note).
-- [ ] `npm run check:python` and `npm run check:ts` pass.
+- [x] Backend tests in `backend/tests/` cover `send_back` refusals (`409` when not waiting for review, `left_for_support`, `Security check`, evaluation copy; `422` when note empty or > 1,000 chars or blank sender), atomic race protection between concurrent `review` and `send_back`, archiving multiple sent-back decisions, `/api/agent/openapi.json` remaining at 6 operations, `take_sent_back` single-winner atomicity, and `POST /api/requests/{id}/send_back` returning the updated request when agent resume fails/times out.
+- [x] Agent tests in `agent/tests/` verify: (a) a resumed send-back resets decision state and model call budget, passes the note as feedback, and reaches a new approval or refusal/referral decision; (b) a request can be sent back more than once; (c) concurrent `resume` + queue run takes a sent-back request only once; (d) a queue run skips an `in_progress` request whose `resume_heartbeat_at` is under 5 minutes old; and (e) a send-back missed by the agent stays `"sent_back"` and is worked by the next queue run (resuming its paused thread with the note).
+- [x] Vitest tests in `dashboard/src/` verify `"Sent back"` badge/status, waiting-for-next-run copy, displaying previous sent-back decisions + notes + reviewer/timestamp, `sent_back` timeline steps, and submitting the Send back form (validating required 1–1,000 char note).
+- [x] `npm run check:python` and `npm run check:ts` pass.
 
 ---
 

@@ -516,3 +516,130 @@ def test_agent_service_resumes_signed_off_request_and_runs_queue(
         assert refused.status_code == 401
         assert accepted.json()["status"] == "accepted"
         assert worked == [(run_id, 2)]
+
+
+def test_send_back_resumes_paused_thread_resets_call_allowance_and_redecides(
+    api, store, monkeypatch
+):
+    monkeypatch.setattr(main, "heartbeat", lambda *a, **k: nullcontext())
+    # Spend 20 model calls on the first pass, leaving < 15 if the counter were not reset
+    first_pass_calls = [call("list_policy_sections") for _ in range(18)]
+    first_model = StubModel(
+        messages=iter(
+            [
+                call("get_request_context"),
+                *first_pass_calls,
+                AIMessage(content="Initial review ready."),
+                call(
+                    "Recommendation",
+                    {
+                        "outcome": "approve",
+                        "rationale": "Approved initially.",
+                        "policy_citations": [CITATION],
+                        "next_action": "Support review.",
+                        "priority_human_review": False,
+                    },
+                ),
+            ]
+        )
+    )
+    main.work_request("REQ-7008", first_model)
+    assert store.get_request("REQ-7008")["status"] == "waiting_for_agent_review"
+
+    second_pass_calls = [call("list_policy_sections") for _ in range(18)]
+    captured_prompts: list[str] = []
+
+    class RecordingModel(StubModel):
+        def _generate(self, messages, *args, **kwargs):
+            captured_prompts.extend(
+                str(m.content) for m in messages if "Priya Nair" in str(m.content)
+            )
+            return super()._generate(messages, *args, **kwargs)
+
+    redecide_model = RecordingModel(
+        messages=iter(
+            [
+                *second_pass_calls,
+                AIMessage(content="Re-checked against dispatch record."),
+                call(
+                    "Recommendation",
+                    {
+                        "outcome": "decline",
+                        "rationale": "Already dispatched before request arrived.",
+                        "policy_citations": [CITATION],
+                        "next_action": "Confirm decline with customer.",
+                        "priority_human_review": False,
+                    },
+                ),
+            ]
+        )
+    )
+
+    monkeypatch.setattr(
+        backend_main,
+        "notify_agent_resume",
+        lambda rid: main.resume_request(rid, llm=redecide_model),
+    )
+    sent1 = api.post(
+        "/api/requests/REQ-7008/send_back",
+        json={
+            "note": "Check dispatch timestamp before approving.",
+            "sent_back_by": "Priya Nair",
+        },
+    )
+    assert sent1.status_code == 200
+    after1 = store.get_request("REQ-7008")
+    assert after1["status"] == "waiting_for_agent_review"
+    assert after1["recommendation"]["outcome"] == "decline"
+    assert len(after1["sent_back"]) == 1
+    assert any(
+        "Check dispatch timestamp before approving." in text
+        and "senior reviewer" in text.lower()
+        for text in captured_prompts
+    )
+
+    # Send back a second time to verify multiple send-backs on one request
+    second_redecide = scripted_model(
+        outcome="request_information",
+        rationale="Hold for customer clarification on redelivery.",
+    )
+    monkeypatch.setattr(
+        backend_main,
+        "notify_agent_resume",
+        lambda rid: main.resume_request(rid, llm=second_redecide),
+    )
+    sent2 = api.post(
+        "/api/requests/REQ-7008/send_back",
+        json={
+            "note": "Offer redelivery options instead.",
+            "sent_back_by": "Dev Anand",
+        },
+    )
+    assert sent2.status_code == 200
+    after2 = store.get_request("REQ-7008")
+    assert after2["status"] == "waiting_for_agent_review"
+    assert after2["recommendation"]["outcome"] == "request_information"
+    assert len(after2["sent_back"]) == 2
+    assert after2["attempts"] == 0
+
+    # Finally sign off cleanly
+    monkeypatch.setattr(backend_main, "notify_agent_resume", main.resume_request)
+    final_review = api.post(
+        "/api/requests/REQ-7008/review",
+        json={
+            "outcome": "request_information",
+            "notes": "Confirmed.",
+            "reviewed_by": "Dev Anand",
+        },
+    )
+    assert final_review.status_code == 200
+    assert store.get_request("REQ-7008")["status"] == "decided"
+
+
+def test_heartbeat_helper_posts_while_active(monkeypatch):
+    beats: list[str] = []
+    monkeypatch.setattr(main, "backend_post", beats.append)
+    with main.heartbeat("/api/requests/REQ-7001/heartbeat", interval=0.01):
+        main.time.sleep(0.05)
+    assert beats
+    assert all(p == "/api/requests/REQ-7001/heartbeat" for p in beats)

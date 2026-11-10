@@ -4,8 +4,9 @@ import contextlib
 import json
 import logging
 import os
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, TypedDict
@@ -55,6 +56,7 @@ MAX_SCREEN_ATTEMPTS = 3
 MAX_RETRIES = 2
 RETRY_DELAY = 1.0
 REMEMBER = "remember"
+HEARTBEAT_SECONDS = 60.0
 ProgressStage = Literal["security_check", "reading_request", "checking_policy"]
 WorkStatus = Literal["done", "waiting", "left_for_support", "skipped"]
 
@@ -93,6 +95,7 @@ class RequestState(TypedDict):
     review: dict[str, Any] | None
     held: bool
     is_evaluation: bool
+    model_calls: int
 
 
 class WorkResult(TypedDict):
@@ -398,15 +401,48 @@ def after_decide(state: RequestState) -> str:
     return "approval"
 
 
+def send_back_message(sent_back_by: str, note: str) -> HumanMessage:
+    """Format the reviewer's send-back note with guidance enforced in agent code."""
+    return HumanMessage(
+        f"Support reviewer {sent_back_by} reviewed your earlier decision and sent "
+        f'this request back with a note:\n"{note}"\n\n'
+        "Treat this as a senior reviewer's feedback on the decision: check "
+        "everything against Shoppie's policy wording, context rules, and order "
+        "records like everything else, call calculate_refund again if recommending "
+        "approval, and refer the request for support review (giving the reason) when "
+        "the policy wording does not support what the note asks."
+    )
+
+
 def run_approval_node(state: RequestState) -> dict[str, Any]:
-    """Pause the graph until a support agent signs off on the recommendation."""
+    """Pause the graph until a support agent signs off or sends the request back."""
     answer = interrupt(
         {
             "request_id": state["request_id"],
             "recommendation": state["recommendation"],
         }
     )
+    if isinstance(answer, dict) and answer.get("action") == "send_back":
+        return {
+            "recommendation": None,
+            "review": None,
+            "held": False,
+            "model_calls": 0,
+            "messages": [
+                send_back_message(
+                    str(answer.get("sent_back_by", "Support reviewer")),
+                    str(answer.get("note", "")),
+                )
+            ],
+        }
     return {"review": answer, "held": False}
+
+
+def after_approval(state: RequestState) -> str:
+    """Return to agent after a send-back, or complete the signed-off request."""
+    if state.get("review") is None:
+        return "agent"
+    return "complete"
 
 
 def run_complete_node(
@@ -519,8 +555,8 @@ def _make_agent_node(tools: list[Any], llm: BaseChatModel | None) -> Any:
     system_message = SystemMessage(REQUEST_INSTRUCTIONS)
 
     def agent(state: RequestState) -> dict[str, Any]:
-        ai_calls = sum(1 for msg in state["messages"] if isinstance(msg, AIMessage))
-        if ai_calls >= MAX_MODEL_CALLS:
+        calls = int(state.get("model_calls", 0))
+        if calls >= MAX_MODEL_CALLS:
             raise RuntimeError(
                 f"Request {state['request_id']} exceeded {MAX_MODEL_CALLS} model calls"
             )
@@ -528,7 +564,7 @@ def _make_agent_node(tools: list[Any], llm: BaseChatModel | None) -> Any:
         reply = call_with_retry(
             model_with_tools.invoke, [system_message, *state["messages"]]
         )
-        return {"messages": [reply]}
+        return {"messages": [reply], "model_calls": calls + 1}
 
     return agent
 
@@ -536,8 +572,8 @@ def _make_agent_node(tools: list[Any], llm: BaseChatModel | None) -> Any:
 def _wire_completion_edges(
     builder: StateGraph[Any], active_store: BaseStore | None
 ) -> None:
-    """Attach approval, completion, hold-loop, and memory edges to the graph."""
-    builder.add_edge("approval", "complete")
+    """Attach approval, send-back loop, completion, hold-loop, and memory edges."""
+    builder.add_conditional_edges("approval", after_approval, ["agent", "complete"])
     if active_store is not None:
 
         def remember_node(state: RequestState) -> dict[str, Any]:
@@ -608,6 +644,41 @@ def build_request_graph(
     )
 
 
+@contextlib.contextmanager
+def heartbeat(path: str, interval: float = HEARTBEAT_SECONDS) -> Iterator[None]:
+    """Send periodic POST heartbeats while background agent work runs."""
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(interval):
+            with contextlib.suppress(Exception):
+                backend_post(path)
+
+    worker = threading.Thread(target=beat, daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stop.set()
+
+
+def _pending_send_back(request_id: str) -> dict[str, Any] | None:
+    """Return the latest sent-back payload when a request awaits re-evaluation."""
+    response = backend_get(f"/api/requests/{request_id}")
+    if response.status_code != httpx.codes.OK:
+        return None
+    detail = response.json()
+    sent_back = detail.get("sent_back") or []
+    if not sent_back or detail.get("recommendation") is not None:
+        return None
+    latest = sent_back[-1]
+    return {
+        "action": "send_back",
+        "note": latest["note"],
+        "sent_back_by": latest["sent_back_by"],
+    }
+
+
 def run_request(
     request_id: str,
     thread_id: str,
@@ -624,21 +695,30 @@ def run_request(
         with context_manager:
             result = graph.invoke(None, config, durability="sync")
         return result["recommendation"]
-    if state.values and state.values.get("recommendation"):
+    send_back = _pending_send_back(request_id)
+    if send_back and state.values and (state.next or state.interrupts):
+        with context_manager:
+            result = graph.invoke(Command(resume=send_back), config, durability="sync")
+        return result["recommendation"]
+    if state.values and state.values.get("recommendation") and not send_back:
         return state.values["recommendation"]
     attempt = (
         int(thread_id.rsplit("-attempt-", maxsplit=1)[-1])
         if "-attempt-" in thread_id
         else 1
     )
+    messages: list[Any] = [HumanMessage("Review the assigned support request.")]
+    if send_back:
+        messages.append(send_back_message(send_back["sent_back_by"], send_back["note"]))
     initial_state: RequestState = {
-        "messages": [HumanMessage("Review the assigned support request.")],
+        "messages": messages,
         "request_id": request_id,
         "attempt": attempt,
         "recommendation": None,
         "review": None,
         "held": False,
         "is_evaluation": False,
+        "model_calls": 0,
     }
     with context_manager:
         result = graph.invoke(initial_state, config, durability="sync")
@@ -694,20 +774,80 @@ def resume_request_thread(
 
 
 def prepare_resume(request_id: str) -> dict[str, Any]:
-    """Validate that a request exists, has a review, and is paused on its thread."""
+    """Validate and claim a paused sign-off or sent-back request for resuming."""
     response = backend_get(f"/api/requests/{request_id}")
     if response.status_code == httpx.codes.NOT_FOUND:
         raise LookupError(f"Support request {request_id} not found")
     response.raise_for_status()
     detail = response.json()
-    review = detail.get("review")
-    if review is None:
-        raise ValueError(f"Request {request_id} has no review to resume")
     attempt = int(detail["attempts"]) + 1
     thread_id = f"request-{request_id}-attempt-{attempt}"
-    if not is_paused(request_id, thread_id):
-        raise ValueError(f"Request {request_id} is not paused")
-    return {"thread_id": thread_id, "review": review}
+    review = detail.get("review")
+    if review is not None:
+        if not is_paused(request_id, thread_id):
+            raise ValueError(f"Request {request_id} is not paused")
+        return {
+            "kind": "review",
+            "request_id": request_id,
+            "thread_id": thread_id,
+            "answer": review,
+        }
+    sent_back = detail.get("sent_back") or []
+    if detail["status"] == "sent_back" and sent_back:
+        take = backend_post(
+            f"/api/requests/{request_id}/take_sent_back", {"owner": "resume"}
+        )
+        if take.status_code != httpx.codes.OK:
+            raise ValueError(refusal_message(take))
+        attempt = int(take.json()["attempt"])
+        latest = sent_back[-1]
+        return {
+            "kind": "send_back",
+            "request_id": request_id,
+            "thread_id": f"request-{request_id}-attempt-{attempt}",
+            "attempt": attempt,
+            "answer": {
+                "action": "send_back",
+                "note": latest["note"],
+                "sent_back_by": latest["sent_back_by"],
+            },
+        }
+    raise ValueError(f"Request {request_id} is not paused or sent back")
+
+
+def execute_resume(
+    prepared: dict[str, Any],
+    llm: BaseChatModel | None = None,
+    route: Route | None = None,
+    store: BaseStore | None = None,
+) -> dict[str, Any]:
+    """Execute a prepared sign-off completion or sent-back re-evaluation."""
+    request_id = prepared["request_id"]
+    thread_id = prepared["thread_id"]
+    if prepared["kind"] == "review":
+        graph = build_request_graph(
+            request_id, llm, route=route or get_route(), store=store
+        )
+        result = _resume_graph_thread(graph, request_id, thread_id, prepared["answer"])
+        return {
+            "request_id": request_id,
+            "status": "decided",
+            "review": result.get("review") or prepared["answer"],
+        }
+    with heartbeat(f"/api/requests/{request_id}/heartbeat"):
+        try:
+            recommendation = run_request(
+                request_id, thread_id, llm, route=route, store=store
+            )
+        except Exception:
+            get_checkpointer().delete_thread(thread_id)
+            backend_post(f"/api/requests/{request_id}/failure").raise_for_status()
+            raise
+    return {
+        "request_id": request_id,
+        "status": "waiting_for_agent_review",
+        "recommendation": recommendation,
+    }
 
 
 def resume_request(
@@ -716,19 +856,9 @@ def resume_request(
     route: Route | None = None,
     store: BaseStore | None = None,
 ) -> dict[str, Any]:
-    """Resume a signed-off request by its request id and complete it."""
+    """Resume a signed-off or sent-back request by its request id."""
     prepared = prepare_resume(request_id)
-    graph = build_request_graph(
-        request_id, llm, route=route or get_route(), store=store
-    )
-    result = _resume_graph_thread(
-        graph, request_id, prepared["thread_id"], prepared["review"]
-    )
-    return {
-        "request_id": request_id,
-        "status": "decided",
-        "review": result.get("review") or prepared["review"],
-    }
+    return execute_resume(prepared, llm, route=route, store=store)
 
 
 def _skipped_result(request_id: str) -> WorkResult:
@@ -757,6 +887,13 @@ def _handle_existing_request(
             "status": "done",
             "line": f"{request_id}: {outcome}, completed after support review.",
         }
+    if detail["status"] == "sent_back" and detail.get("sent_back"):
+        take = backend_post(
+            f"/api/requests/{request_id}/take_sent_back", {"owner": "run"}
+        )
+        if take.status_code != httpx.codes.OK:
+            return attempt, _skipped_result(request_id)
+        return int(take.json()["attempt"]), None
     if detail["status"] != "in_progress":
         return attempt, _skipped_result(request_id)
     return attempt, None

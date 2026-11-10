@@ -14,7 +14,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
 from mangum import Mangum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from backend.instructions import QUEUE_INSTRUCTIONS, REQUEST_INSTRUCTIONS
 from backend.models import DecisionKind, DecisionRequest
@@ -106,6 +106,28 @@ class ReviewInput(BaseModel):
     outcome: Literal["approve", "decline", "request_information"]
     notes: str
     reviewed_by: str = Field(min_length=1)
+
+
+class SendBackInput(BaseModel):
+    """A support reviewer's note sending a decision back to the agent."""
+
+    note: str = Field(min_length=1, max_length=1000)
+    sent_back_by: str = Field(min_length=1)
+
+    @field_validator("note", "sent_back_by")
+    @classmethod
+    def require_non_blank(cls, value: str) -> str:
+        """Require non-whitespace text on send-back fields."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Field cannot be blank")
+        return stripped
+
+
+class TakeSentBackInput(BaseModel):
+    """Which worker is claiming a sent-back request."""
+
+    owner: Literal["resume", "run"]
 
 
 class CompletionInput(BaseModel):
@@ -527,6 +549,83 @@ def review_request(
         notify_agent_resume(request_id)
     updated = require_request(store, request_id)
     return {**updated, "request_id": request_id}
+
+
+def _check_send_back_eligible(record: dict[str, Any]) -> None:
+    """Refuse send-back unless the request is waiting with a non-security decision."""
+    req_inner = record.get("request") or {}
+    if any(
+        src.get(key)
+        for src in (record, req_inner)
+        for key in ("copy_of", "evaluation_id")
+    ):
+        raise HTTPException(
+            status_code=409, detail="Evaluation copies cannot be sent back"
+        )
+    if record["status"] != "waiting_for_agent_review":
+        raise HTTPException(status_code=409, detail="Request is not waiting for review")
+    rec = record.get("recommendation")
+    if rec is None:
+        raise HTTPException(
+            status_code=409, detail="Request has no recommendation to send back"
+        )
+    citations = rec.get("policy_citations") or []
+    if "Security check" in citations or rec.get("decided_by") == "Security check":
+        raise HTTPException(
+            status_code=409, detail="Security check holds cannot be sent back"
+        )
+
+
+@app.post(
+    "/api/requests/{request_id}/send_back",
+    operation_id="send_back_request",
+    dependencies=[Depends(require_support_handler)],
+)
+def send_back_request(
+    request_id: str,
+    payload: SendBackInput,
+    request: Request,
+) -> dict[str, Any]:
+    """Send a recommended request back to the agent with a required note."""
+    store = store_of(request)
+    record = require_request(store, request_id)
+    _check_send_back_eligible(record)
+    if not store.send_back_request(request_id, payload.note, payload.sent_back_by):
+        raise HTTPException(status_code=409, detail="Request is not waiting for review")
+    notify_agent_resume(request_id)
+    updated = require_request(store, request_id)
+    return {**updated, "request_id": request_id}
+
+
+@app.post(
+    "/api/requests/{request_id}/take_sent_back",
+    operation_id="take_sent_back",
+    dependencies=[Depends(require_agent_key)],
+)
+def take_sent_back(
+    request_id: str, payload: TakeSentBackInput, request: Request
+) -> dict[str, Any]:
+    """Claim a sent-back request once for agent resume or queue work."""
+    store = store_of(request)
+    require_request(store, request_id)
+    attempt = store.take_sent_back(request_id, payload.owner)
+    if attempt is None:
+        raise HTTPException(status_code=409, detail="Request is not sent back")
+    return {"request_id": request_id, "status": "in_progress", "attempt": attempt}
+
+
+@app.post(
+    "/api/requests/{request_id}/heartbeat",
+    operation_id="request_heartbeat",
+    dependencies=[Depends(require_agent_key)],
+)
+def request_heartbeat(request_id: str, request: Request) -> dict[str, str]:
+    """Record a live resume heartbeat for an in-progress request."""
+    store = store_of(request)
+    require_request(store, request_id)
+    if not store.heartbeat_request(request_id):
+        raise HTTPException(status_code=409, detail="Request is not in progress")
+    return {"request_id": request_id, "status": "alive"}
 
 
 @app.post(

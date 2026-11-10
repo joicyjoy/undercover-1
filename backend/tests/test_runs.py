@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import NullPool
@@ -476,3 +478,213 @@ def test_support_review_warns_when_agent_unreachable_or_times_out(
     assert res.json()["status"] == "decided"
     assert res.json()["review"]["reviewed_by"] == "Priya Nair"
     assert any("REQ-7001" in rec.getMessage() for rec in caplog.records)
+
+
+def _recommend_req_7001(client: TestClient) -> dict[str, Any]:
+    client.post("/api/requests/REQ-7001/start", headers=AGENT_HEADERS)
+    calc = client.post(
+        "/api/requests/REQ-7001/refund",
+        json={
+            "reason": "cancellation",
+            "lines": [{"item_id": "ITM-10001-1", "quantity": 1}],
+        },
+        headers=AGENT_HEADERS,
+    )
+    payout = calc.json()["refund"]
+    return client.post(
+        "/api/requests/REQ-7001/recommendation",
+        json={**RECOMMENDATION, "refund_amount": payout},
+        headers=AGENT_HEADERS,
+    ).json()
+
+
+def test_send_back_refusals_and_validation(client, monkeypatch):
+    monkeypatch.setattr(main, "notify_agent_resume", lambda rid: None)
+
+    waiting = client.post(
+        "/api/requests/REQ-7001/send_back",
+        json={"note": "Check item", "sent_back_by": "Priya Nair"},
+    )
+    assert waiting.status_code == 409
+
+    with_key = client.post(
+        "/api/requests/REQ-7001/send_back",
+        json={"note": "Check item", "sent_back_by": "Priya Nair"},
+        headers=AGENT_HEADERS,
+    )
+    assert with_key.status_code == 401
+
+    client.post("/api/requests/REQ-7002/start", headers=AGENT_HEADERS)
+    in_prog = client.post(
+        "/api/requests/REQ-7002/send_back",
+        json={"note": "Check item", "sent_back_by": "Priya Nair"},
+    )
+    assert in_prog.status_code == 409
+
+    client.post("/api/requests/REQ-7002/failure", headers=AGENT_HEADERS)
+    client.post("/api/requests/REQ-7002/start", headers=AGENT_HEADERS)
+    client.post("/api/requests/REQ-7002/failure", headers=AGENT_HEADERS)
+    left_for_support = client.post(
+        "/api/requests/REQ-7002/send_back",
+        json={"note": "No recommendation", "sent_back_by": "Priya Nair"},
+    )
+    assert left_for_support.status_code == 409
+
+    client.post("/api/requests/REQ-7901/start", headers=AGENT_HEADERS)
+    client.post(
+        "/api/requests/REQ-7901/recommendation",
+        json={
+            "outcome": "request_information",
+            "rationale": "Instruction found.",
+            "policy_citations": ["Security check"],
+            "next_action": "Hold.",
+            "priority_human_review": True,
+            "decided_by": "Security check",
+        },
+        headers=AGENT_HEADERS,
+    )
+    sec_refusal = client.post(
+        "/api/requests/REQ-7901/send_back",
+        json={"note": "Override security check", "sent_back_by": "Priya Nair"},
+    )
+    assert sec_refusal.status_code == 409
+
+    _recommend_req_7001(client)
+    blank_note = client.post(
+        "/api/requests/REQ-7001/send_back",
+        json={"note": "   ", "sent_back_by": "Priya Nair"},
+    )
+    too_long = client.post(
+        "/api/requests/REQ-7001/send_back",
+        json={"note": "x" * 1001, "sent_back_by": "Priya Nair"},
+    )
+    blank_sender = client.post(
+        "/api/requests/REQ-7001/send_back",
+        json={"note": "Please recheck.", "sent_back_by": " "},
+    )
+    assert blank_note.status_code == 422
+    assert too_long.status_code == 422
+    assert blank_sender.status_code == 422
+
+    orig_get = app.state.store.get_request
+    monkeypatch.setattr(
+        app.state.store,
+        "get_request",
+        lambda rid: (
+            {**(orig_get(rid) or {}), "evaluation_id": "eval-1"}
+            if rid == "REQ-7001"
+            else orig_get(rid)
+        ),
+    )
+    eval_refusal = client.post(
+        "/api/requests/REQ-7001/send_back",
+        json={"note": "Eval copy", "sent_back_by": "Priya Nair"},
+    )
+    assert eval_refusal.status_code == 409
+
+    agent_ops = {
+        op["operationId"]
+        for path_item in client.get("/api/agent/openapi.json").json()["paths"].values()
+        for op in path_item.values()
+        if isinstance(op, dict) and "operationId" in op
+    }
+    assert len(agent_ops) == 6
+    assert "send_back_request" not in agent_ops
+    assert "take_sent_back" not in agent_ops
+
+
+def test_send_back_archives_history_blocks_concurrent_review_and_warns_offline(
+    client, monkeypatch, caplog
+):
+    first = _recommend_req_7001(client)["decision"]
+
+    def unreachable(url: str, **kwargs: object):
+        raise main.httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(main.httpx, "post", unreachable)
+    with caplog.at_level("WARNING"):
+        sent = client.post(
+            "/api/requests/REQ-7001/send_back",
+            json={
+                "note": "Recalculate with delivery fee checked.",
+                "sent_back_by": "Priya Nair",
+            },
+        )
+    assert sent.status_code == 200
+    body = sent.json()
+    assert body["status"] == "sent_back"
+    assert body["recommendation"] is None
+    assert len(body["sent_back"]) == 1
+    assert body["sent_back"][0]["note"] == "Recalculate with delivery fee checked."
+    assert body["sent_back"][0]["sent_back_by"] == "Priya Nair"
+    assert body["sent_back"][0]["decision"]["payout"] == first["payout"]
+    assert body["steps"][-1]["stage"] == "sent_back"
+    assert any("REQ-7001" in r.getMessage() for r in caplog.records)
+
+    waiting_ids = {
+        item["request_id"]
+        for item in client.get("/api/requests/waiting", headers=AGENT_HEADERS).json()
+    }
+    assert "REQ-7001" in waiting_ids
+
+    sign_off_while_sent_back = client.post(
+        "/api/requests/REQ-7001/review",
+        json={"outcome": "approve", "notes": "Too late", "reviewed_by": "Priya Nair"},
+    )
+    assert sign_off_while_sent_back.status_code == 409
+
+    store = app.state.store
+    assert store.attempts_calculation("REQ-7001", 1) is None
+
+    unauth_take = client.post(
+        "/api/requests/REQ-7001/take_sent_back", json={"owner": "resume"}
+    )
+    assert unauth_take.status_code == 401
+    taken = client.post(
+        "/api/requests/REQ-7001/take_sent_back",
+        json={"owner": "resume"},
+        headers=AGENT_HEADERS,
+    )
+    taken_second = client.post(
+        "/api/requests/REQ-7001/take_sent_back",
+        json={"owner": "run"},
+        headers=AGENT_HEADERS,
+    )
+    assert taken.status_code == 200
+    assert taken_second.status_code == 409
+
+    hb = client.post("/api/requests/REQ-7001/heartbeat", headers=AGENT_HEADERS)
+    assert hb.status_code == 200
+    assert client.get("/api/requests/REQ-7001").json()["resume_heartbeat_at"]
+
+    client.post(
+        "/api/requests/REQ-7003/start",
+        headers=AGENT_HEADERS,
+    )
+    assert (
+        client.post(
+            "/api/requests/REQ-7003/take_sent_back",
+            json={"owner": "run"},
+            headers=AGENT_HEADERS,
+        ).status_code
+        == 409
+    )
+
+    # Atomic mutex between store.record_review and store.send_back_request
+    store.save_recommendation(
+        "REQ-7003",
+        {**RECOMMENDATION, "decision": "decline", "payout": 0.0, "refund_amount": 0.0},
+    )
+    assert (
+        store.record_review(
+            "REQ-7003", {"outcome": "decline", "notes": "", "reviewed_by": "Priya Nair"}
+        )
+        == "decided"
+    )
+    assert not store.send_back_request("REQ-7003", "Too late", "Priya Nair")
+    assert (
+        client.post(
+            "/api/requests/REQ-7003/heartbeat", headers=AGENT_HEADERS
+        ).status_code
+        == 409
+    )

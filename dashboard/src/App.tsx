@@ -8,6 +8,7 @@ import {
   RecommendationCard,
   RequestOverview,
   RunPanel,
+  SentBackHistory,
 } from "./components";
 import { formatDate } from "./format";
 import type {
@@ -174,6 +175,15 @@ export function App() {
     });
   }
 
+  function sendBackRequest(note: string, sentBackBy: string) {
+    if (!selectedId) return;
+    void post(
+      `/api/requests/${selectedId}/send_back`,
+      "Request sent back to agent.",
+      { note, sent_back_by: sentBackBy },
+    );
+  }
+
   const refreshQueue = () => void loadQueue();
   const selected = queue.find((item) => item.request_id === selectedId);
 
@@ -201,37 +211,14 @@ export function App() {
           onSelect={selectRequest}
           onRefresh={refreshQueue}
         />
-        <section className="detail-column" aria-label="Request details">
-          {detailError && (
-            <div className="panel state-message error-state" role="alert">
-              {detailError}
-            </div>
-          )}
-          {!detail && !detailError && (
-            <div className="panel state-message">
-              Select a request to see its details.
-            </div>
-          )}
-          {detail && selected && (
-            <>
-              <div className="detail-grid">
-                <RequestOverview detail={detail} orderId={selected.order_id} />
-                <OrderCard detail={detail} />
-              </div>
-              {detail.recommendation && (
-                <RecommendationCard recommendation={detail.recommendation} />
-              )}
-              <ContextUsed steps={detail.steps} />
-              <ReviewRecord detail={detail} />
-              <ActionPanel
-                detail={detail}
-                busy={busy}
-                onReview={recordReview}
-              />
-              <ProgressCard detail={detail} />
-            </>
-          )}
-        </section>
+        <DetailColumn
+          detail={detail}
+          detailError={detailError}
+          selectedOrderId={selected?.order_id}
+          busy={busy}
+          onReview={recordReview}
+          onSendBack={sendBackRequest}
+        />
       </div>
       <InstructionsPanel instructions={instructions} />
       <footer>
@@ -241,6 +228,60 @@ export function App() {
         </span>
       </footer>
     </main>
+  );
+}
+
+interface DetailColumnProps {
+  detail: RequestDetail | null;
+  detailError: string | null;
+  selectedOrderId: string | undefined;
+  busy: boolean;
+  onReview: (outcome: Outcome, notes: string, reviewedBy: string) => void;
+  onSendBack: (note: string, sentBackBy: string) => void;
+}
+
+function DetailColumn({
+  detail,
+  detailError,
+  selectedOrderId,
+  busy,
+  onReview,
+  onSendBack,
+}: Readonly<DetailColumnProps>) {
+  return (
+    <section className="detail-column" aria-label="Request details">
+      {detailError && (
+        <div className="panel state-message error-state" role="alert">
+          {detailError}
+        </div>
+      )}
+      {!detail && !detailError && (
+        <div className="panel state-message">
+          Select a request to see its details.
+        </div>
+      )}
+      {detail && selectedOrderId && (
+        <>
+          <div className="detail-grid">
+            <RequestOverview detail={detail} orderId={selectedOrderId} />
+            <OrderCard detail={detail} />
+          </div>
+          {detail.recommendation && (
+            <RecommendationCard recommendation={detail.recommendation} />
+          )}
+          <SentBackHistory sentBack={detail.sent_back ?? []} />
+          <ContextUsed steps={detail.steps} />
+          <ReviewRecord detail={detail} />
+          <ActionPanel
+            detail={detail}
+            busy={busy}
+            onReview={onReview}
+            onSendBack={onSendBack}
+          />
+          <ProgressCard detail={detail} />
+        </>
+      )}
+    </section>
   );
 }
 

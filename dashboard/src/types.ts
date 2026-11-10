@@ -1,5 +1,9 @@
 export type QueueStatus =
-  "waiting" | "in_progress" | "waiting_for_agent_review" | "decided";
+  | "waiting"
+  | "in_progress"
+  | "waiting_for_agent_review"
+  | "sent_back"
+  | "decided";
 export type Outcome = "approve" | "decline" | "request_information";
 
 export interface QueueItem {
@@ -71,6 +75,13 @@ export interface SupportRequest {
   evidence: { type: string; reference: string; description: string }[];
 }
 
+export interface SentBackDecision {
+  decision: Recommendation;
+  note: string;
+  sent_back_by: string;
+  sent_back_at: string;
+}
+
 export interface RequestDetail {
   request: SupportRequest;
   customer: { customer_id: string; name: string };
@@ -97,6 +108,7 @@ export interface RequestDetail {
   attempts: number;
   recommendation: Recommendation | null;
   review: Review | null;
+  sent_back?: SentBackDecision[];
   steps: RequestStep[];
 }
 

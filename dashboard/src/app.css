@@ -372,6 +372,7 @@ button:disabled {
   background: currentColor;
 }
 .status-waiting,
+.status-sent_back,
 .todo-to_do {
   color: #7d5912;
   background: #fff3d8;
@@ -1015,6 +1016,65 @@ footer {
   padding: 22px 2px 0;
   color: var(--muted);
   font-size: 11px;
+}
+
+.sent-back-history {
+  display: grid;
+  gap: 14px;
+}
+.sent-back-panel {
+  padding: 22px 24px;
+  background: #fff8eb;
+}
+.sent-back-note {
+  margin-top: 12px;
+  padding: 13px 15px;
+  border-radius: 11px;
+  background: var(--surface);
+  display: grid;
+  gap: 5px;
+}
+.sent-back-note small {
+  color: var(--muted);
+  font: 600 9px var(--mono);
+  letter-spacing: 0.07em;
+}
+.sent-back-note p {
+  margin: 0;
+  font-size: 13px;
+}
+.action-forms {
+  display: grid;
+  gap: 16px;
+}
+.send-back-form {
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.send-back-form .eyebrow {
+  margin: 0;
+}
+.send-back-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.send-back-form input,
+.send-back-form textarea {
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+.send-back-form button {
+  justify-self: start;
 }
 
 @media (max-width: 1120px) {

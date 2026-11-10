@@ -1,11 +1,15 @@
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from langchain_core.messages import AIMessage
+from sqlalchemy import update
 
 from agent import main
 from agent.queue import run_queue, work_run
 from agent.tests.stubs import StubModel, call, scripted_model
+from backend import main as backend_main
+from backend.store import support_requests
 
 
 def queue_model(*replies: AIMessage) -> StubModel:
@@ -235,3 +239,70 @@ def test_work_run_reports_a_failed_run_to_the_backend(store):
     run = store.current_run()
     assert run["status"] == "failed"
     assert "left requests unworked" in run["summary"]
+
+
+def test_dispatch_leaves_active_resume_alone_and_works_missed_send_back(
+    api, store, monkeypatch
+):
+    monkeypatch.setattr(backend_main, "notify_agent_resume", lambda rid: None)
+    main.work_request("REQ-7008", scripted_model())
+    main.work_request("REQ-7007", scripted_model())
+
+    # REQ-7008 is sent back while agent is offline -> stays sent_back for next run
+    sent_missed = api.post(
+        "/api/requests/REQ-7008/send_back",
+        json={"note": "Verify carrier scan.", "sent_back_by": "Priya Nair"},
+    )
+    assert sent_missed.json()["status"] == "sent_back"
+
+    # REQ-7007 is sent back and actively claimed by resume with fresh heartbeat
+    api.post(
+        "/api/requests/REQ-7007/send_back",
+        json={"note": "Check expiry date.", "sent_back_by": "Priya Nair"},
+    )
+    assert store.take_sent_back("REQ-7007", "resume") == 1
+    assert store.get_request("REQ-7007")["resume_heartbeat_at"] is not None
+
+    # A queue run picks up REQ-7008 (resuming its paused thread with the note) while
+    # leaving REQ-7007 in progress untouched because its resume heartbeat is recent.
+    run_id = start(store, 1)
+    llm = queue_model(
+        call("list_waiting_requests"),
+        todos("REQ-7008"),
+        work("REQ-7008"),
+        finish("Worked REQ-7008 after missed send-back."),
+    )
+    redecide = scripted_model(
+        outcome="decline",
+        rationale="Carrier scan shows dispatched before request.",
+        include_context=False,
+    )
+    summary = run_queue(run_id, 1, llm, lambda: redecide)
+    store.finish_run(run_id, "finished", summary)
+
+    assert "Worked REQ-7008" in summary
+    assert store.get_request("REQ-7008")["status"] == "waiting_for_agent_review"
+    assert store.get_request("REQ-7008")["recommendation"]["outcome"] == "decline"
+    assert len(store.get_request("REQ-7008")["sent_back"]) == 1
+    assert store.get_request("REQ-7007")["status"] == "in_progress"
+    assert store.get_request("REQ-7007")["recommendation"] is None
+
+    # If REQ-7007's resume goes silent (> 5 minutes), the next run recovers it too.
+    stale_time = (datetime.now(UTC) - timedelta(minutes=6)).isoformat()
+    with store.engine.begin() as connection:
+        connection.execute(
+            update(support_requests)
+            .where(support_requests.c.request_id == "REQ-7007")
+            .values(resume_heartbeat_at=stale_time)
+        )
+    run2 = start(store, 1)
+    redecide_7007 = scripted_model(
+        outcome="decline",
+        rationale="Recovered after silent resume.",
+        include_context=False,
+    )
+    run_queue(
+        run2, 1, queue_model(finish("Recovered REQ-7007.")), lambda: redecide_7007
+    )
+    assert store.get_request("REQ-7007")["status"] == "waiting_for_agent_review"
+    assert store.get_request("REQ-7007")["recommendation"]["outcome"] == "decline"
