@@ -3,6 +3,8 @@
 import argparse
 import time
 
+from dotenv import load_dotenv
+
 from agent import main as agent
 
 POLL_SECONDS = 3
@@ -19,6 +21,7 @@ def run_capped(cap: int) -> str:
 
 def main() -> None:
     """Parse the arguments and run the agent."""
+    load_dotenv(override=True)
     parser = argparse.ArgumentParser(prog="uv run -m agent")
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("request_id", nargs="?", help="work one request, e.g. REQ-7001")

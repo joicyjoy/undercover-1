@@ -149,12 +149,12 @@ Convert the agent service into a `BedrockAgentCoreApp`, decouple `agent/` from `
 
 ### Success criteria
 
-- [ ] `agent/` and `backend/` have zero non-test imports from one another (verified by boundary test).
-- [ ] Tests via Starlette `TestClient(agent.entrypoint.app)` with stand-ins verify: importing `runtime.main` / `agent.entrypoint` triggers zero DB/Identity/network work; on Runtime the first request reseeds random and fetches each credential from Identity once (retrying if readiness failed); off-Runtime requests without Bearer key return `401` except `health`; unknown/malformed payloads return `400`; `work_run` and `resume_request` accept/refuse work, keep `/ping` at `HealthyBusy` while background work runs and back to `Healthy` when finished or errored.
-- [ ] Backend unit tests verify both HTTP (`/invocations` + Bearer header) and AWS Runtime (`invoke_agent_runtime` with session id >= 33 chars, 1 retry attempt, connect=5 / read=20 timeouts) routes for accepted, refused (`409`), connection failure, HTTP/`ClientError` error, and read timeout/cut-off answer.
-- [ ] Checkpoint pool tests verify `ConnectionPool` configuration with `prepare_threshold=None`.
-- [ ] `npm run check:runtime` passes (`uv run --isolated --only-group runtime python -c "import runtime.main"`), `ruff`, `pyright`, and `pytest` cover `runtime/` cleanly.
-- [ ] With `npm run dev` stopped, `uv run --env-file .env --isolated --only-group runtime python -m runtime.main` starts on port `8080` and `POST http://127.0.0.1:8080/invocations` with `{"operation": "health"}` answers `{"healthy": true}`.
+- [x] `agent/` and `backend/` have zero non-test imports from one another (verified by boundary test).
+- [x] Tests via Starlette `TestClient(agent.entrypoint.app)` with stand-ins verify: importing `runtime.main` / `agent.entrypoint` triggers zero DB/Identity/network work; on Runtime the first request reseeds random and fetches each credential from Identity once (retrying if readiness failed); off-Runtime requests without Bearer key return `401` except `health`; unknown/malformed payloads return `400`; `work_run` and `resume_request` accept/refuse work, keep `/ping` at `HealthyBusy` while background work runs and back to `Healthy` when finished or errored.
+- [x] Backend unit tests verify both HTTP (`/invocations` + Bearer header) and AWS Runtime (`invoke_agent_runtime` with session id >= 33 chars, 1 retry attempt, connect=5 / read=20 timeouts) routes for accepted, refused (`409`), connection failure, HTTP/`ClientError` error, and read timeout/cut-off answer.
+- [x] Checkpoint pool tests verify `ConnectionPool` configuration with `prepare_threshold=None`.
+- [x] `npm run check:runtime` passes (`uv run --isolated --only-group runtime python -c "import runtime.main"`), `ruff`, `pyright`, and `pytest` cover `runtime/` cleanly.
+- [x] With `npm run dev` stopped, `uv run --env-file .env --isolated --only-group runtime python -m runtime.main` starts on port `8080` and `POST http://127.0.0.1:8080/invocations` with `{"operation": "health"}` answers `{"healthy": true}`.
 
 ---
 

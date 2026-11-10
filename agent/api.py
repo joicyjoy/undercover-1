@@ -7,15 +7,12 @@ from typing import Any
 
 import httpx
 
-BACKEND_URL = os.getenv("UNDERCOVER_API", "http://127.0.0.1:8000")
+DEFAULT_BACKEND_URL = "http://127.0.0.1:8000"
 API_KEY_HEADER = "X-API-Key"
 MISSING_KEY = "UNDERCOVER_API_KEY is missing. Add it to .env"
 
-backend = httpx.Client(
-    base_url=BACKEND_URL,
-    timeout=30,
-    transport=httpx.HTTPTransport(retries=3),
-)
+backend: httpx.Client | None = None
+_CLIENT_STATE: dict[str, Any] = {"client": None, "url": None}
 
 
 class Refused(Exception):
@@ -38,7 +35,24 @@ def api_url() -> str:
         return url.rstrip("/")
     if port := os.getenv("PORT"):
         return f"http://127.0.0.1:{port}"
-    return BACKEND_URL
+    return DEFAULT_BACKEND_URL
+
+
+def get_backend() -> httpx.Client:
+    """Return the shared HTTP client for the backend, created lazily on first call."""
+    if backend is not None:
+        return backend
+    url = api_url()
+    client = _CLIENT_STATE["client"]
+    if client is None or _CLIENT_STATE["url"] != url or client.is_closed:
+        client = httpx.Client(
+            base_url=url,
+            timeout=30,
+            transport=httpx.HTTPTransport(retries=3),
+        )
+        _CLIENT_STATE["client"] = client
+        _CLIENT_STATE["url"] = url
+    return client
 
 
 def api_key() -> str:
@@ -56,7 +70,7 @@ def call(method: str, path: str, **request: Any) -> Any:
         path = f"/api/{path.lstrip('/')}"
     headers = request.pop("headers", {})
     headers[API_KEY_HEADER] = api_key()
-    response = backend.request(method, path, headers=headers, **request)
+    response = get_backend().request(method, path, headers=headers, **request)
     if response.is_error:
         detail = response.text
         with contextlib.suppress(Exception):

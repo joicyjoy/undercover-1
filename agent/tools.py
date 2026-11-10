@@ -12,8 +12,8 @@ from langgraph.store.base import BaseStore
 
 from agent import api, memory
 from agent.api import Refused
+from agent.models import Line, RefundReason
 from agent.routes import GatewayRefused, Route, Target
-from backend.refunds import Line, RefundReason
 
 ProgressStage = str
 

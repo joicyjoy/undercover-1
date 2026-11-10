@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse
@@ -16,6 +15,7 @@ from fastapi.routing import APIRoute
 from mangum import Mangum
 from pydantic import BaseModel, Field, field_validator
 
+from backend import agent_service
 from backend.instructions import QUEUE_INSTRUCTIONS, REQUEST_INSTRUCTIONS
 from backend.models import DecisionKind, DecisionRequest
 from backend.policies import list_policies, read_section
@@ -35,7 +35,6 @@ DEFAULT_DATABASE_PATH = (
     Path(__file__).resolve().parent.parent / "data" / "shoppie.sqlite3"
 )
 DASHBOARD_DIST = Path(__file__).resolve().parent.parent / "dashboard" / "dist"
-DEFAULT_AGENT_URL = "http://127.0.0.1:8002"
 AGENT_OPERATION_IDS = {
     "get_request_context",
     "calculate_refund",
@@ -225,45 +224,34 @@ def require_request(store: Store, request_id: str) -> dict[str, Any]:
     return result
 
 
-def agent_service_url() -> str:
-    """Return the base URL of the Shoppie Agent service."""
-    return os.getenv("UNDERCOVER_AGENT", DEFAULT_AGENT_URL).rstrip("/")
-
-
-def agent_service_headers() -> dict[str, str]:
-    """Return the X-API-Key header for calls to the agent service when set."""
-    key = os.getenv("UNDERCOVER_API_KEY")
-    return {"X-API-Key": key} if key else {}
-
-
 def run_in_background(store: Store, run_id: str, cap: int) -> None:
-    """Hand a run to the agent service, or mark it failed when unreachable."""
-    try:
-        response = httpx.post(
-            f"{agent_service_url()}/runs/{run_id}/work",
-            json={"cap": cap},
-            headers=agent_service_headers(),
-            timeout=30,
-        )
-        response.raise_for_status()
-    except Exception as error:
+    """Hand a run to the agent entrypoint, failing only if it did not take it."""
+    result = agent_service.call_agent(
+        {"operation": "work_run", "run_id": run_id, "cap": cap}
+    )
+    if result.state in ("did_not_take", "refused"):
         store.finish_run(
-            run_id, "failed", f"The run stopped: the agent service failed ({error})"
+            run_id,
+            "failed",
+            f"The run stopped: the agent service failed ({result.reason})",
+        )
+    elif result.state == "uncertain":
+        logger.warning(
+            "Uncertain whether the agent started run %s: %s", run_id, result.reason
         )
 
 
 def notify_agent_resume(request_id: str) -> None:
-    """Ask the agent service to resume a paused request, warning if unreachable."""
-    try:
-        response = httpx.post(
-            f"{agent_service_url()}/requests/{request_id}/resume",
-            headers=agent_service_headers(),
-            timeout=10,
-        )
-        response.raise_for_status()
-    except Exception as error:
+    """Ask the agent entrypoint to resume a paused request, warning if not taken."""
+    result = agent_service.call_agent(
+        {"operation": "resume_request", "request_id": request_id}
+    )
+    if result.state != "accepted":
         logger.warning(
-            "Could not reach agent service to resume %s: %s", request_id, error
+            "Could not reach agent service to resume %s (%s): %s",
+            request_id,
+            result.state,
+            result.reason,
         )
 
 

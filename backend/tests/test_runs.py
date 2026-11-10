@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import NullPool
 
-from backend import main
+from backend import agent_service, main
 from backend.main import app
 from backend.seed import seed_database
 from backend.store import (
@@ -380,8 +380,10 @@ def test_background_run_is_handed_to_the_agent_service_with_the_key(store, monke
     calls: list[dict[str, object]] = []
 
     class Accepted:
-        def raise_for_status(self) -> None:
-            return None
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {"accepted": True}
 
     def fake_post(url: str, **kwargs: object) -> Accepted:
         calls.append({"url": url, **kwargs})
@@ -389,14 +391,19 @@ def test_background_run_is_handed_to_the_agent_service_with_the_key(store, monke
 
     monkeypatch.setenv("UNDERCOVER_API_KEY", TEST_API_KEY)
     monkeypatch.setenv("UNDERCOVER_AGENT", "http://agent.test/")
-    monkeypatch.setattr(main.httpx, "post", fake_post)
+    monkeypatch.setattr(agent_service.httpx, "post", fake_post)
     run_id = store.create_run(2)
     assert run_id is not None
     main.run_in_background(store, run_id, 2)
 
-    assert calls[0]["url"] == f"http://agent.test/runs/{run_id}/work"
-    assert calls[0]["json"] == {"cap": 2}
-    assert calls[0]["headers"] == AGENT_HEADERS
+    assert calls[0]["url"] == "http://agent.test/invocations"
+    assert calls[0]["json"] == {
+        "operation": "work_run",
+        "run_id": run_id,
+        "cap": 2,
+    }
+    assert calls[0]["headers"] == {"Authorization": f"Bearer {TEST_API_KEY}"}
+    assert calls[0]["timeout"] == 10.0
     run = store.current_run()
     assert run is not None
     assert run["status"] == "running"
@@ -406,9 +413,9 @@ def test_background_run_is_marked_failed_when_the_agent_service_is_unreachable(
     store, monkeypatch
 ):
     def unreachable(url: str, **kwargs: object):
-        raise main.httpx.ConnectError("connection refused")
+        raise agent_service.httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(main.httpx, "post", unreachable)
+    monkeypatch.setattr(agent_service.httpx, "post", unreachable)
     run_id = store.create_run(2)
     assert run_id is not None
     main.run_in_background(store, run_id, 2)
@@ -464,9 +471,9 @@ def test_support_review_warns_when_agent_unreachable_or_times_out(
     )
 
     def timeout(url: str, **kwargs: object):
-        raise main.httpx.ReadTimeout("timed out")
+        raise agent_service.httpx.ReadTimeout("timed out")
 
-    monkeypatch.setattr(main.httpx, "post", timeout)
+    monkeypatch.setattr(agent_service.httpx, "post", timeout)
     with caplog.at_level("WARNING"):
         res = client.post(
             "/api/requests/REQ-7001/review",
@@ -599,9 +606,9 @@ def test_send_back_archives_history_blocks_concurrent_review_and_warns_offline(
     first = _recommend_req_7001(client)["decision"]
 
     def unreachable(url: str, **kwargs: object):
-        raise main.httpx.ConnectError("connection refused")
+        raise agent_service.httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(main.httpx, "post", unreachable)
+    monkeypatch.setattr(agent_service.httpx, "post", unreachable)
     with caplog.at_level("WARNING"):
         sent = client.post(
             "/api/requests/REQ-7001/send_back",

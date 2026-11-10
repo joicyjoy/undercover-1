@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agent import api as agent_api
-from agent import main
+from agent import entrypoint, main
 from agent.tests.gateway_stand_in import GatewayStandIn
 from agent.tests.local_server import serving
 from agent.tests.stubs import screening_stub
@@ -14,10 +14,14 @@ from backend.store import Store
 
 @pytest.fixture(autouse=True)
 def aws_env(monkeypatch):
-    """Set fake AWS credentials so SigV4 signing succeeds without real AWS keys."""
+    """Set fake AWS credentials and clear Runtime ARN/ready state across tests."""
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test-key-id")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test-secret-key")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.delenv("UNDERCOVER_AGENT_RUNTIME", raising=False)
+    entrypoint.reset_ready()
+    yield
+    entrypoint.reset_ready()
 
 
 @pytest.fixture

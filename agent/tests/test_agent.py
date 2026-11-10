@@ -2,10 +2,10 @@ from contextlib import nullcontext
 from typing import Any, TypedDict
 
 import pytest
-from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
+from starlette.testclient import TestClient as StarletteTestClient
 
-from agent import main, service
+from agent import entrypoint, main
 from agent.models import Recommendation
 from agent.safety import apply_context_overrides
 from agent.tests.stubs import (
@@ -465,17 +465,47 @@ def test_agent_service_resumes_signed_off_request_and_runs_queue(
     monkeypatch.setattr(backend_main, "run_in_background", lambda *args: None)
     main.work_request("REQ-7008", scripted_model())
 
-    with TestClient(service.app) as agent_client:
-        assert agent_client.get("/health").json() == {"status": "ok"}
-        assert agent_client.post("/requests/REQ-0000/resume").status_code == 404
-        assert agent_client.post("/requests/REQ-7008/resume").status_code == 409
+    with StarletteTestClient(entrypoint.app) as agent_client:
+        auth_headers = {
+            "Authorization": "Bearer test-agent-secret-key-0123456789abcdef"
+        }
+        assert agent_client.post(
+            "/invocations", json={"operation": "health"}
+        ).json() == {"healthy": True}
+        assert (
+            agent_client.post(
+                "/invocations",
+                json={"operation": "resume_request", "request_id": "REQ-0000"},
+                headers=auth_headers,
+            ).status_code
+            == 404
+        )
+        assert agent_client.post(
+            "/invocations",
+            json={"operation": "resume_request", "request_id": "REQ-7008"},
+            headers=auth_headers,
+        ).json() == {"refused": "Request REQ-7008 is not paused or sent back"}
 
         resume_calls: list[Any] = []
+        done = main.threading.Event()
+        orig_execute = main.execute_resume
+
+        def tracked_resume(prepared: dict[str, Any]) -> None:
+            try:
+                orig_execute(prepared)
+            finally:
+                done.set()
+
+        monkeypatch.setattr(main, "execute_resume", tracked_resume)
         monkeypatch.setattr(
             backend_main,
             "notify_agent_resume",
             lambda rid: resume_calls.append(
-                agent_client.post(f"/requests/{rid}/resume")
+                agent_client.post(
+                    "/invocations",
+                    json={"operation": "resume_request", "request_id": rid},
+                    headers=auth_headers,
+                )
             ),
         )
         reviewed = api.post(
@@ -487,35 +517,49 @@ def test_agent_service_resumes_signed_off_request_and_runs_queue(
             },
         )
         assert reviewed.status_code == 200
-        assert reviewed.json()["status"] == "decided"
-        assert resume_calls[0].json() == {
-            "request_id": "REQ-7008",
-            "status": "accepted",
-        }
-        assert agent_client.post("/requests/REQ-7008/resume").status_code == 409
-        assert agent_client.post("/requests/REQ-7001/resume").status_code == 409
+        assert done.wait(timeout=5)
+        assert resume_calls[0].json() == {"accepted": True}
+        assert (
+            "refused"
+            in agent_client.post(
+                "/invocations",
+                json={"operation": "resume_request", "request_id": "REQ-7008"},
+                headers=auth_headers,
+            ).json()
+        )
+        assert (
+            "refused"
+            in agent_client.post(
+                "/invocations",
+                json={"operation": "resume_request", "request_id": "REQ-7001"},
+                headers=auth_headers,
+            ).json()
+        )
         decided = store.get_request("REQ-7008")
         assert decided["status"] == "decided"
         assert decided["review"]["reviewed_by"] == "Priya Nair"
 
-        started_run = agent_client.post("/runs", json={"cap": 2})
-        assert started_run.status_code == 200
-        assert agent_client.post("/runs", json={"cap": 2}).status_code == 409
-
         worked: list[tuple[str, int]] = []
-        monkeypatch.setattr(
-            service.queue, "work_run", lambda rid, cap: worked.append((rid, cap))
+        work_done = main.threading.Event()
+
+        def record_work(rid: str, cap: int) -> None:
+            worked.append((rid, cap))
+            work_done.set()
+
+        monkeypatch.setattr(entrypoint.queue, "work_run", record_work)
+        refused = agent_client.post(
+            "/invocations",
+            json={"operation": "work_run", "run_id": "RUN-1", "cap": 2},
         )
-        run_id = started_run.json()["run_id"]
-        refused = agent_client.post(f"/runs/{run_id}/work", json={"cap": 2})
         accepted = agent_client.post(
-            f"/runs/{run_id}/work",
-            json={"cap": 2},
-            headers={"X-API-Key": "test-agent-secret-key-0123456789abcdef"},
+            "/invocations",
+            json={"operation": "work_run", "run_id": "RUN-1", "cap": 2},
+            headers=auth_headers,
         )
         assert refused.status_code == 401
-        assert accepted.json()["status"] == "accepted"
-        assert worked == [(run_id, 2)]
+        assert accepted.json() == {"accepted": True}
+        assert work_done.wait(timeout=5)
+        assert worked == [("RUN-1", 2)]
 
 
 def test_send_back_resumes_paused_thread_resets_call_allowance_and_redecides(

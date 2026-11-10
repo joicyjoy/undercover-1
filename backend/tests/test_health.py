@@ -2,13 +2,11 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy import update
 
 from agent import main as agent_main
-from agent import service as agent_service
 from backend import main as backend_main
 from backend.main import app
 from backend.store import Store, support_requests
@@ -276,12 +274,6 @@ def test_agent_api_key_protects_agent_routes_and_never_stands_in_for_handler(
             no_key_client.get("/api/policies", headers={"X-API-Key": key}).status_code
             == 401
         )
-
-    with (
-        pytest.raises(RuntimeError, match="UNDERCOVER_API_KEY is missing"),
-        TestClient(agent_service.app),
-    ):
-        pass
 
 
 def test_agent_openapi_exposes_only_agent_operations_without_servers_or_key_inputs(

@@ -12,8 +12,6 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, TypedDict
 
 import httpx
-import psycopg
-from dotenv import load_dotenv
 from langchain.agents.middleware import ModelRetryMiddleware, ToolRetryMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -31,6 +29,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.store.base import BaseStore
 from langgraph.types import Command, interrupt
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field, SecretStr
 
 from agent import api, direct, memory
@@ -41,8 +40,6 @@ from agent.models import Recommendation
 from agent.routes import GatewayRefused, Route, Target
 from agent.safety import apply_context_overrides, contains_unsupported_execution_claim
 from agent.tools import make_request_tools as build_tools
-
-load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +80,7 @@ class Screening(BaseModel):
 
 
 _CHECKPOINTER_CACHE: dict[str, BaseCheckpointSaver[Any]] = {}
+_CHECKPOINTER_LOCK = threading.Lock()
 
 
 class RequestState(TypedDict):
@@ -188,31 +186,48 @@ def retry_middleware() -> list[ModelRetryMiddleware | ToolRetryMiddleware]:
     ]
 
 
+def _open_postgres_saver(database_url: str) -> PostgresSaver:
+    """Open a pooled PostgresSaver in the undercover schema on first use."""
+    pool: Any = ConnectionPool(
+        database_url,
+        min_size=1,
+        max_size=4,
+        kwargs={
+            "autocommit": True,
+            "prepare_threshold": None,
+            "row_factory": dict_row,
+            "options": f"-c search_path={SCHEMA}",
+        },
+        open=True,
+    )
+    try:
+        with pool.connection() as conn:
+            conn.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
+        saver = PostgresSaver(pool)
+        saver.setup()
+    except Exception:
+        pool.close()
+        raise
+    return saver
+
+
 def get_checkpointer() -> BaseCheckpointSaver[Any]:
     """Return a PostgresSaver when DATABASE_URL is set, or InMemorySaver otherwise."""
     database_url = os.getenv("DATABASE_URL")
     database_path = os.getenv("SHOPPIE_DATABASE_PATH")
-    if database_url and not database_path:
-        key = f"postgres:{database_url}"
-        cached = _CHECKPOINTER_CACHE.get(key)
-        if isinstance(cached, PostgresSaver) and not cached.conn.closed:
-            return cached
-        connect_kwargs: dict[str, Any] = {
-            "autocommit": True,
-            "prepare_threshold": 0,
-            "row_factory": dict_row,
-            "options": f"-c search_path={SCHEMA}",
-        }
-        connection: Any = psycopg.connect(database_url, **connect_kwargs)
-        connection.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
-        saver = PostgresSaver(connection)
-        saver.setup()
-        _CHECKPOINTER_CACHE[key] = saver
-        return saver
-    key = f"memory:{database_path or 'default'}"
-    if key not in _CHECKPOINTER_CACHE:
-        _CHECKPOINTER_CACHE[key] = InMemorySaver()
-    return _CHECKPOINTER_CACHE[key]
+    with _CHECKPOINTER_LOCK:
+        if database_url and not database_path:
+            key = f"postgres:{database_url}"
+            cached = _CHECKPOINTER_CACHE.get(key)
+            if isinstance(cached, PostgresSaver) and not cached.conn.closed:
+                return cached
+            saver = _open_postgres_saver(database_url)
+            _CHECKPOINTER_CACHE[key] = saver
+            return saver
+        key = f"memory:{database_path or 'default'}"
+        if key not in _CHECKPOINTER_CACHE:
+            _CHECKPOINTER_CACHE[key] = InMemorySaver()
+        return _CHECKPOINTER_CACHE[key]
 
 
 def call_with_retry(
