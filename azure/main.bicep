@@ -202,7 +202,9 @@ resource contextApp 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
                 path: '/health'
                 port: 8006
               }
+              initialDelaySeconds: 3
               periodSeconds: 10
+              timeoutSeconds: 5
             }
           ]
         }
@@ -284,7 +286,9 @@ resource backendApp 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
                 path: '/api/health'
                 port: 8000
               }
+              initialDelaySeconds: 5
               periodSeconds: 10
+              timeoutSeconds: 5
             }
             {
               type: 'Liveness'
@@ -292,7 +296,9 @@ resource backendApp 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
                 path: '/api/health'
                 port: 8000
               }
+              initialDelaySeconds: 10
               periodSeconds: 30
+              timeoutSeconds: 5
             }
           ]
         }
@@ -398,7 +404,9 @@ resource agentApp 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
                 path: '/ping'
                 port: 8080
               }
+              initialDelaySeconds: 5
               periodSeconds: 10
+              timeoutSeconds: 5
             }
             {
               type: 'Liveness'
@@ -406,7 +414,9 @@ resource agentApp 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
                 path: '/ping'
                 port: 8080
               }
+              initialDelaySeconds: 10
               periodSeconds: 30
+              timeoutSeconds: 5
             }
           ]
         }
