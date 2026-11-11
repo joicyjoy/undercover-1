@@ -18,7 +18,7 @@ From Google Fonts:
 - **Ink on light backgrounds**: Midnight `#073B4C`
 - **Ink on dark backgrounds**: Sea Mist `#CDD8DB`
 
-Use Sea Green, Marigold and Coral when three things sit side by side, such as request states or chart series. Add Cerulean fourth and Raspberry fifth.
+Use Sea Green, Marigold and Coral when three things sit side by side, such as a claim's states or chart series. Add Cerulean fourth and Raspberry fifth.
 
 ## Surfaces
 
@@ -34,4 +34,4 @@ Panels are rounded with no outline. Sea Green and Marigold are too bright for sm
 
 ## Tone
 
-Plain business English in US spelling. Short labels, no jargon and no exclamation marks. Money is in US dollars, such as $1,250.00.
+Plain business English in US spelling. Short labels, no jargon and no exclamation marks. Money is in Indian rupees, such as ₹1,250.00, and times are in IST.

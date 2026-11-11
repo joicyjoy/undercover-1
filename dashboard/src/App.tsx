@@ -30,6 +30,78 @@ async function getJson<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+interface NoticeState {
+  text: string;
+  kind: "info" | "error";
+}
+
+function NoticeBanner({ notice }: Readonly<{ notice: NoticeState | null }>) {
+  if (!notice) return null;
+  return (
+    <div
+      className={notice.kind === "error" ? "notice notice-error" : "notice"}
+      role={notice.kind === "error" ? "alert" : "status"}
+    >
+      {notice.text}
+    </div>
+  );
+}
+
+async function sendPost(url: string, body?: object): Promise<void> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!response.ok) {
+    const errorBody = (await response.json()) as { detail?: string };
+    throw new Error(
+      errorBody.detail ?? `Request failed (${String(response.status)})`,
+    );
+  }
+}
+
+function useDashboardPolling(options: {
+  active: boolean;
+  resumingId: string | null;
+  selectedId: string | null;
+  loadQueue: () => Promise<void>;
+  loadRun: () => Promise<void>;
+  loadDetail: (id: string) => Promise<void>;
+  onExpireResume: (id: string) => void;
+}) {
+  const {
+    active,
+    resumingId,
+    selectedId,
+    loadQueue,
+    loadRun,
+    loadDetail,
+    onExpireResume,
+  } = options;
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => {
+      void loadQueue();
+      void loadRun();
+      if (selectedId) void loadDetail(selectedId);
+    }, 1500);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [active, loadDetail, loadQueue, loadRun, selectedId]);
+
+  useEffect(() => {
+    if (!resumingId) return;
+    const timeout = window.setTimeout(() => {
+      onExpireResume(resumingId);
+    }, 15_000);
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [onExpireResume, resumingId]);
+}
+
 export function App() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -40,7 +112,8 @@ export function App() {
   const [queueState, setQueueState] = useState<QueueState>("loading");
   const [detailError, setDetailError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [notice, setNotice] = useState<NoticeState | null>(null);
+  const [resumingId, setResumingId] = useState<string | null>(null);
 
   const loadQueue = useCallback(async () => {
     setQueueState("loading");
@@ -76,6 +149,9 @@ export function App() {
       const result = await getJson<RequestDetail>(`/api/requests/${requestId}`);
       setDetail(result);
       setDetailError(null);
+      if (result.status !== "sent_back") {
+        setResumingId((current) => (current === requestId ? null : current));
+      }
     } catch {
       setDetail(null);
       setDetailError("We could not load this request. Try selecting it again.");
@@ -103,61 +179,59 @@ export function App() {
     };
   }, [loadDetail, selectedId]);
 
+  const waitingForResume =
+    !busy && resumingId !== null && resumingId === selectedId;
   const active =
     run?.status === "running" ||
     detail?.status === "in_progress" ||
+    waitingForResume ||
     queue.some((item) => item.status === "in_progress");
 
-  useEffect(() => {
-    if (!active) return;
-    const timer = window.setInterval(() => {
-      void loadQueue();
-      void loadRun();
-      if (selectedId) void loadDetail(selectedId);
-    }, 1500);
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [active, loadDetail, loadQueue, loadRun, selectedId]);
+  const expireResume = useCallback((id: string) => {
+    setResumingId((current) => (current === id ? null : current));
+  }, []);
 
-  async function post(url: string, done: string, body?: object) {
+  useDashboardPolling({
+    active,
+    resumingId,
+    selectedId,
+    loadQueue,
+    loadRun,
+    loadDetail,
+    onExpireResume: expireResume,
+  });
+
+  async function post(
+    url: string,
+    done: string,
+    body?: object,
+  ): Promise<boolean> {
     setBusy(true);
-    setMessage(null);
+    setNotice(null);
     try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-      });
-      if (!response.ok) {
-        const errorBody = (await response.json()) as { detail?: string };
-        throw new Error(
-          errorBody.detail ?? `Request failed (${String(response.status)})`,
-        );
-      }
-      setMessage(done);
-      await Promise.all([
-        loadQueue(),
-        loadRun(),
-        selectedId ? loadDetail(selectedId) : Promise.resolve(),
-      ]);
+      await sendPost(url, body);
+      setNotice({ text: done, kind: "info" });
+      return true;
     } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : "Something went wrong.",
-      );
+      setNotice({
+        text: error instanceof Error ? error.message : "Something went wrong.",
+        kind: "error",
+      });
+      return false;
+    } finally {
       await Promise.all([
         loadQueue(),
         loadRun(),
         selectedId ? loadDetail(selectedId) : Promise.resolve(),
       ]);
-    } finally {
       setBusy(false);
     }
   }
 
   function selectRequest(id: string) {
     setSelectedId(id);
-    setMessage(null);
+    setNotice(null);
+    setResumingId(null);
   }
 
   const maxCap = Math.max(queue.length, 1);
@@ -180,13 +254,25 @@ export function App() {
     });
   }
 
-  function sendBackRequest(note: string, sentBackBy: string) {
-    if (!selectedId) return;
-    void post(
-      `/api/requests/${selectedId}/send_back`,
+  async function resumeAfterSendBack(
+    requestId: string,
+    note: string,
+    sentBackBy: string,
+  ) {
+    setResumingId(requestId);
+    const ok = await post(
+      `/api/requests/${requestId}/send_back`,
       "Request sent back to agent.",
       { note, sent_back_by: sentBackBy },
     );
+    if (!ok) {
+      setResumingId((current) => (current === requestId ? null : current));
+    }
+  }
+
+  function sendBackRequest(note: string, sentBackBy: string) {
+    if (!selectedId) return;
+    void resumeAfterSendBack(selectedId, note, sentBackBy);
   }
 
   const refreshQueue = () => void loadQueue();
@@ -202,11 +288,7 @@ export function App() {
         onInitiate={initiateProcessing}
         onRefresh={refreshQueue}
       />
-      {message && (
-        <div className="notice" role="status">
-          {message}
-        </div>
-      )}
+      <NoticeBanner notice={notice} />
       <RunPanel run={run} />
       <div className="workspace">
         <QueuePanel
@@ -278,6 +360,7 @@ function DetailColumn({
           <ContextUsed steps={detail.steps} />
           <ReviewRecord detail={detail} />
           <ActionPanel
+            key={detail.request.request_id}
             detail={detail}
             busy={busy}
             onReview={onReview}
