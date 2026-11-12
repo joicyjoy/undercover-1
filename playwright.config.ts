@@ -13,6 +13,11 @@ export default defineConfig({
       reuseExistingServer: true,
     },
     {
+      command: "node e2e/copilot_stand_in.js",
+      url: "http://127.0.0.1:8004/ping",
+      reuseExistingServer: true,
+    },
+    {
       command:
         "uv run -m backend.seed && uv run -m uvicorn backend.main:app --port 8000",
       url: "http://127.0.0.1:8000/api/health",
@@ -20,6 +25,8 @@ export default defineConfig({
       env: {
         UNDERCOVER_AGENT: "http://127.0.0.1:8003",
         UNDERCOVER_AGENT_RUNTIME: "",
+        UNDERCOVER_COPILOT: "http://127.0.0.1:8004",
+        UNDERCOVER_COPILOT_RUNTIME: "",
         UNDERCOVER_API_KEY: "e2e-agent-secret-key-0123456789abcdef",
         SHOPPIE_DATABASE_PATH: "data/e2e.sqlite3",
         DATABASE_URL: "",

@@ -56,8 +56,15 @@ The agent supports the support team; agents remain responsible for processing re
 
 The platform uses three primary data sources: order records (`customer_orders.json`), customer support requests, and data governance context files (`context/`). These records support the queue, the context layer, and the agent's recommendations.
 
+## Shoppie Copilot
+
+The dashboard includes a collapsible right-hand **Shoppie Copilot** sidebar available across the queue and request detail views:
+
+- **Queue & request intelligence:** Copilot answers questions about priority requests, policy citations, refund breakdowns, customer history, queue runs, and pilot quality criteria by calling real backend, policy, and enterprise context tools rather than guessing.
+- **Handler roles & memory:** Support handlers identify via Azure Entra ID headers in production or a local dev switcher between Dana Whitfield (`HND-01`, Senior Support Handler) and Marcus Oyelaran (`HND-02`, Support Handler). Handler preferences and facts are stored strictly in that handler's isolated memory namespace.
+- **Human-in-the-loop actions:** Copilot executes send-backs immediately when asked, starts capped queue runs and tracks progress, and pauses with an explicit `ConfirmationCard` before recording any support sign-off (`Confirm sign off` / `Cancel`). Payouts over ₹10,000.00 require senior handler authority and are refused immediately for non-senior handlers.
+
 ## Not for now
 
-- No sign-in. Everyone who uses the screens sees everything.
 - No real cancellations, returns or refunds.
 - No messages to customers.

@@ -143,8 +143,8 @@ Finalize deployment manifests for both AWS AgentCore Runtime and Azure Container
 - Docs sync: Update `docs/SPEC.md`, `docs/TECH_STACK.md`, `docs/CODE_STANDARDS.md`, `docs/PROCESS.md`, and `docs/STATUS.md` to document the Copilot architecture, run commands, routes, and deployment layout accurately.
 
 **Success criteria:**
-- [ ] `agentcore/agentcore.json` and `agentcore/cdk/lib/cdk-stack.ts` match `labs/week3day5_lab1.ipynb` naming (`copilot`, `copilot_main.py`, `UNDERCOVER_COPILOT_MEMORY_ID`).
-- [ ] `azure/main.bicep` validates cleanly (when `az bicep` is checked) and defines `shoppie-copilot` beside `shoppie-agent`, `shoppie-backend`, and `shoppie-context`.
-- [ ] With `.env` temporarily moved aside, `npm run check` (`check:python`, `check:server`, `check:runtime`, `check:context`, `check:ts`, Vitest, and Playwright E2E including `e2e/dashboard.spec.ts`, `e2e/runtime.spec.ts`, and `e2e/copilot.spec.ts`) passes completely.
-- [ ] Live smoke verification with `npm run seed`, the default model, and Playwright browser inspection confirms working end-to-end Copilot queries, runs, send-backs, sign-off confirmations, and clean rendering in both light and dark modes (`BRAND.md`).
-- [ ] `docs/SPEC.md`, `docs/TECH_STACK.md`, `docs/CODE_STANDARDS.md`, `docs/PROCESS.md`, and `docs/STATUS.md` reflect the completed COPILOT build.
+- [x] `agentcore/agentcore.json` and `agentcore/cdk/lib/cdk-stack.ts` match `labs/week3day5_lab1.ipynb` naming (`copilot`, `copilot_main.py`, `UNDERCOVER_COPILOT_MEMORY_ID`).
+- [x] `azure/main.bicep` validates cleanly (when `az bicep` is checked) and defines `shoppie-copilot` beside `shoppie-agent`, `shoppie-backend`, and `shoppie-context`.
+- [x] With `.env` temporarily moved aside, `npm run check` (`check:python`, `check:server`, `check:runtime`, `check:context`, `check:ts`, Vitest, and Playwright E2E including `e2e/dashboard.spec.ts`, `e2e/runtime.spec.ts`, and `e2e/copilot.spec.ts`) passes completely.
+- [x] Live smoke verification with `npm run seed`, the default model, and Playwright browser inspection confirms working end-to-end Copilot queries, runs, send-backs, sign-off confirmations, and clean rendering in both light and dark modes (`BRAND.md`).
+- [x] `docs/SPEC.md`, `docs/TECH_STACK.md`, `docs/CODE_STANDARDS.md`, `docs/PROCESS.md`, and `docs/STATUS.md` reflect the completed COPILOT build.

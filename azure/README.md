@@ -1,10 +1,11 @@
 # Azure Container Apps Deployment (Option B)
 
-Deploys Shoppie as three containers on **Azure Container Apps** backed by **Azure Database for PostgreSQL - Flexible Server**:
+Deploys Shoppie as four containers on **Azure Container Apps** backed by **Azure Database for PostgreSQL - Flexible Server**:
 
 1. `shoppie-backend` (`azure/Dockerfile.backend`, `--only-group server`, external HTTPS ingress on port `8000`, serves `dashboard/dist` at `/`)
 2. `shoppie-agent` (`azure/Dockerfile.agent`, `--only-group runtime`, internal-only ingress on port `8080`, verifies `Authorization: Bearer <UNDERCOVER_API_KEY>` except `health`)
-3. `shoppie-context` (`azure/Dockerfile.context`, `--only-group context`, internal-only ingress on port `8006`, serves `/mcp` and `GET /health`)
+3. `shoppie-copilot` (`azure/Dockerfile.copilot`, `--only-group runtime`, internal-only ingress on port `8080`, runs the Shoppie Copilot LangGraph AgentCore service)
+4. `shoppie-context` (`azure/Dockerfile.context`, `--only-group context`, internal-only ingress on port `8006`, serves `/mcp` and `GET /health`)
 
 ## Prerequisites
 
@@ -40,9 +41,11 @@ az acr login -n "$ACR"
 docker build --platform linux/amd64 -f azure/Dockerfile.context -t "$ACR_LOGIN/shoppie-context:latest" .
 docker build --platform linux/amd64 -f azure/Dockerfile.backend -t "$ACR_LOGIN/shoppie-backend:latest" .
 docker build --platform linux/amd64 -f azure/Dockerfile.agent   -t "$ACR_LOGIN/shoppie-agent:latest" .
+docker build --platform linux/amd64 -f azure/Dockerfile.copilot -t "$ACR_LOGIN/shoppie-copilot:latest" .
 docker push "$ACR_LOGIN/shoppie-context:latest"
 docker push "$ACR_LOGIN/shoppie-backend:latest"
 docker push "$ACR_LOGIN/shoppie-agent:latest"
+docker push "$ACR_LOGIN/shoppie-copilot:latest"
 
 # Or, if ACR Tasks (`az acr build`) is permitted on your subscription:
 # az acr build -r "$ACR" -f azure/Dockerfile.backend -t shoppie-backend:latest .
@@ -80,9 +83,11 @@ az acr login -n $ACR
 docker build --platform linux/amd64 -f azure/Dockerfile.context -t "$ACR_LOGIN/shoppie-context:latest" .
 docker build --platform linux/amd64 -f azure/Dockerfile.backend -t "$ACR_LOGIN/shoppie-backend:latest" .
 docker build --platform linux/amd64 -f azure/Dockerfile.agent   -t "$ACR_LOGIN/shoppie-agent:latest" .
+docker build --platform linux/amd64 -f azure/Dockerfile.copilot -t "$ACR_LOGIN/shoppie-copilot:latest" .
 docker push "$ACR_LOGIN/shoppie-context:latest"
 docker push "$ACR_LOGIN/shoppie-backend:latest"
 docker push "$ACR_LOGIN/shoppie-agent:latest"
+docker push "$ACR_LOGIN/shoppie-copilot:latest"
 
 az deployment group create -g $RG -f azure/main.bicep `
   -p deployApps=true `

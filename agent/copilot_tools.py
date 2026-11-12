@@ -16,7 +16,7 @@ from langgraph.prebuilt import ToolRuntime
 from langgraph.store.base import BaseStore
 
 from agent.copilot_memory import recall_handler_memories
-from agent.direct import Direct
+from agent.direct import from_environment as direct_from_environment
 from agent.gateway import from_environment as gateway_from_environment
 from agent.routes import GatewayRefused, Route, Target
 
@@ -182,7 +182,7 @@ def _resolve_context_route(ctx: CopilotContext) -> Route:
         return ctx.context_route
     if gw := gateway_from_environment():
         return gw
-    return Direct()
+    return direct_from_environment()
 
 
 def _call_context_mcp(

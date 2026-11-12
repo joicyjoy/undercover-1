@@ -113,11 +113,16 @@ def _system_prompt(state: CopilotState) -> str:
         "a note.\n"
         "5. Never sign off on a request directly: call prepare_sign_off so the "
         "handler confirms explicitly first, and report if permission is denied.\n"
-        "6. When starting a run with start_queue_run, check progress with "
-        "wait_for_queue_run and report what finished vs what is still running.\n"
+        "6. Only call start_queue_run or start_quality_benchmark when the "
+        "handler explicitly asks to start one; never start runs unprompted on "
+        "overview queries. When starting a run with start_queue_run, check "
+        "progress with wait_for_queue_run and report what finished vs what is "
+        "still running.\n"
         "7. Reference request IDs cleanly (such as REQ-7001) so handlers can click "
         "them.\n"
-        "8. Never use exclamation marks in responses."
+        "8. Never use exclamation marks in responses.\n"
+        "9. Prefer concise bullet lists rather than Markdown tables (the "
+        "sidebar is narrow)."
     )
 
 
