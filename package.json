@@ -7,9 +7,10 @@
   },
   "scripts": {
     "prepare": "lefthook install && playwright install chromium",
-    "dev": "concurrently -k -n backend,agent,context,dashboard npm:dev:backend npm:dev:agent npm:dev:context npm:dev:dashboard",
+    "dev": "concurrently -k -n backend,agent,copilot,context,dashboard npm:dev:backend npm:dev:agent npm:dev:copilot npm:dev:context npm:dev:dashboard",
     "dev:backend": "uv run --env-file .env -m uvicorn backend.main:app --reload --reload-dir backend",
     "dev:agent": "uv run --env-file .env -m uvicorn agent.entrypoint:app --port 8080 --reload --reload-dir agent",
+    "dev:copilot": "uv run --env-file .env -m uvicorn agent.copilot_entrypoint:app --port 8081 --reload --reload-dir agent",
     "dev:context": "uv run -m context",
     "dev:dashboard": "vite dashboard",
     "build": "vite build dashboard",
@@ -18,7 +19,7 @@
     "check": "npm run check:python && npm run check:ts && npm run e2e",
     "check:python": "uv run ruff format --check && uv run ruff check && pyright && uv run pytest -q && npm run check:server && npm run check:runtime && npm run check:context",
     "check:server": "uv run --isolated --only-group server python -c \"import backend.main\"",
-    "check:runtime": "uv run --isolated --only-group runtime python -c \"import runtime.main\"",
+    "check:runtime": "uv run --isolated --only-group runtime python -c \"import runtime.main, runtime.copilot_main\"",
     "check:context": "uv run --isolated --only-group context python -c \"import context.server\"",
     "check:ts": "prettier --check -u dashboard e2e *.config.* && eslint dashboard e2e *.config.* && tsc && vitest run --root dashboard --coverage",
     "e2e": "playwright test"

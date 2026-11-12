@@ -101,10 +101,10 @@ Connect the backend conversation/turn APIs to the Copilot AgentCore service over
 - `package.json`: Add `dev:copilot` (`uv run uvicorn agent.copilot_entrypoint:app --port 8081 --reload`), include it in `npm run dev`, and extend `check:runtime` to verify `runtime/copilot_main.py` compiles cleanly too.
 
 **Success criteria:**
-- [ ] Starting a turn creates a `working` turn record, dispatches asynchronously to `UNDERCOVER_COPILOT` or `UNDERCOVER_COPILOT_RUNTIME`, and rejects a concurrent second turn while one is still active (`< 20` minutes).
-- [ ] When a turn exceeds 20 minutes without completion, reading or posting to the conversation transitions the stale turn to `stopped` cleanly so the handler is never stuck.
-- [ ] Confirming or cancelling a `waiting_confirmation` turn dispatches `copilot_resume` with a freshly minted ephemeral handler token and validates that only the conversation owner can resume it.
-- [ ] `npm run dev` starts `backend`, `agent`, `copilot`, `context`, and `dashboard` cleanly together, and `backend/tests/test_copilot.py` + `backend/tests/test_agent_service.py` pass.
+- [x] Starting a turn creates a `working` turn record, dispatches asynchronously to `UNDERCOVER_COPILOT` or `UNDERCOVER_COPILOT_RUNTIME`, and rejects a concurrent second turn while one is still active (`< 20` minutes).
+- [x] When a turn exceeds 20 minutes without completion, reading or posting to the conversation transitions the stale turn to `stopped` cleanly so the handler is never stuck.
+- [x] Confirming or cancelling a `waiting_confirmation` turn dispatches `copilot_resume` with a freshly minted ephemeral handler token and validates that only the conversation owner can resume it.
+- [x] `npm run dev` starts `backend`, `agent`, `copilot`, `context`, and `dashboard` cleanly together, and `backend/tests/test_copilot.py` + `backend/tests/test_agent_service.py` pass.
 
 ---
 

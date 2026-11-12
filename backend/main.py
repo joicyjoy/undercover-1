@@ -19,6 +19,7 @@ from backend import agent_service
 from backend.handlers import (
     HandlerProfile,
     check_sign_off_permission,
+    create_handler_token,
     list_dev_handlers,
     resolve_handler,
 )
@@ -997,7 +998,40 @@ def create_copilot_turn(
             status_code=409,
             detail="Conversation already has an active or waiting turn",
         )
-    return {"conversation_id": conversation_id, "turn": turn, "call_state": "accepted"}
+    handler_token = create_handler_token(handler_profile)
+    outcome = agent_service.call_copilot(
+        {
+            "action": "copilot_turn",
+            "conversation_id": conversation_id,
+            "turn_id": turn["turn_id"],
+            "message": payload.message,
+            "page_path": payload.page_path,
+            "selected_request_id": payload.selected_request_id,
+            "handler_token": handler_token,
+            "backend_url": os.getenv("UNDERCOVER_API", ""),
+        },
+        conversation_id=conversation_id,
+    )
+    if outcome.state in {"did_not_take", "refused"}:
+        failed = store.update_copilot_turn(
+            conversation_id,
+            turn["turn_id"],
+            "failed",
+            {"error": outcome.reason or outcome.state},
+        )
+        turn = next(
+            (
+                item
+                for item in (failed or {}).get("turns", [])
+                if item["turn_id"] == turn["turn_id"]
+            ),
+            turn,
+        )
+    return {
+        "conversation_id": conversation_id,
+        "turn": turn,
+        "call_state": outcome.state,
+    }
 
 
 @app.post(
@@ -1091,7 +1125,28 @@ def confirm_copilot_turn(
     updated = store.resume_copilot_turn(conversation_id, turn_id)
     if updated is None:
         raise HTTPException(status_code=409, detail="Turn is not waiting confirmation")
-    return {"conversation": updated, "call_state": "accepted"}
+    handler_token = create_handler_token(handler_profile)
+    outcome = agent_service.call_copilot(
+        {
+            "action": "copilot_resume",
+            "conversation_id": conversation_id,
+            "turn_id": turn_id,
+            "approved": payload.approved,
+            "note": payload.note,
+            "handler_token": handler_token,
+            "backend_url": os.getenv("UNDERCOVER_API", ""),
+        },
+        conversation_id=conversation_id,
+    )
+    if outcome.state in {"did_not_take", "refused"}:
+        reverted = store.update_copilot_turn(
+            conversation_id,
+            turn_id,
+            "waiting_confirmation",
+            {"error": outcome.reason or outcome.state},
+        )
+        updated = reverted or updated
+    return {"conversation": updated, "call_state": outcome.state}
 
 
 @app.post(

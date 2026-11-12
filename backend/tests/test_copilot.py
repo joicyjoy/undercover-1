@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from fastapi.testclient import TestClient
 from sqlalchemy import update
 
+from backend import agent_service
+from backend.agent_service import AgentCallResult
 from backend.handlers import HANDLERS, create_handler_token, verify_handler_token
 from backend.main import app
 from backend.store import Store, copilot_conversations, copilot_turns
@@ -157,6 +159,15 @@ def test_overview_metrics_customer_history_and_quality_runs(tmp_path, monkeypatc
 def test_conversation_isolation_turns_steps_and_stale_timeout(tmp_path, monkeypatch):
     db = tmp_path / "conv.sqlite3"
     monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(db))
+    dispatched: list[tuple[dict[str, object], str]] = []
+
+    def fake_call_copilot(
+        payload: dict[str, object], conversation_id: str = ""
+    ) -> AgentCallResult:
+        dispatched.append((payload, conversation_id))
+        return AgentCallResult("accepted")
+
+    monkeypatch.setattr(agent_service, "call_copilot", fake_call_copilot)
     dana_token = create_handler_token(HANDLERS["HND-01"])
     marcus_token = create_handler_token(HANDLERS["HND-02"])
 
@@ -252,3 +263,88 @@ def test_conversation_isolation_turns_steps_and_stale_timeout(tmp_path, monkeypa
     assert refreshed["status"] == "stopped"
     matching = next(t for t in refreshed["turns"] if t["turn_id"] == started["turn_id"])
     assert matching["status"] == "stopped"
+    assert len(dispatched) == 2
+    assert dispatched[0][0]["action"] == "copilot_turn"
+    assert dispatched[1][0]["action"] == "copilot_resume"
+
+
+def test_copilot_turn_dispatch_payload_and_failure_fallbacks(tmp_path, monkeypatch):
+    db = tmp_path / "dispatch.sqlite3"
+    monkeypatch.setenv("SHOPPIE_DATABASE_PATH", str(db))
+    dispatched: list[tuple[dict[str, object], str]] = []
+    next_result = AgentCallResult("did_not_take", "Copilot down")
+
+    def fake_call_copilot(
+        payload: dict[str, object], conversation_id: str = ""
+    ) -> AgentCallResult:
+        dispatched.append((payload, conversation_id))
+        return next_result
+
+    monkeypatch.setattr(agent_service, "call_copilot", fake_call_copilot)
+    dana_token = create_handler_token(HANDLERS["HND-01"])
+
+    with TestClient(app) as client:
+        conv_id = client.post(
+            "/api/copilot/conversations",
+            json={"title": "Dispatch check"},
+            headers={"Authorization": f"Bearer {dana_token}"},
+        ).json()["conversation_id"]
+
+        failed_start = client.post(
+            f"/api/copilot/conversations/{conv_id}/turns",
+            json={
+                "message": "Inspect REQ-9001",
+                "page_path": "/requests",
+                "selected_request_id": "REQ-9001",
+            },
+            headers={"Authorization": f"Bearer {dana_token}"},
+        )
+        assert failed_start.status_code == 200
+        body = failed_start.json()
+        assert body["call_state"] == "did_not_take"
+        assert body["turn"]["status"] == "failed"
+        assert body["turn"]["error"] == "Copilot down"
+        payload0, cid0 = dispatched[0]
+        assert cid0 == conv_id
+        assert payload0["page_path"] == "/requests"
+        assert payload0["selected_request_id"] == "REQ-9001"
+        verified = verify_handler_token(str(payload0["handler_token"]))
+        assert verified is not None
+        assert verified.handler_id == "HND-01"
+
+        next_result = AgentCallResult("accepted")
+        started = client.post(
+            f"/api/copilot/conversations/{conv_id}/turns",
+            json={"message": "Sign off REQ-9001"},
+            headers={"Authorization": f"Bearer {dana_token}"},
+        )
+        turn_id = started.json()["turn"]["turn_id"]
+        client.post(
+            f"/api/copilot/conversations/{conv_id}/turns/{turn_id}/complete",
+            json={
+                "status": "waiting_confirmation",
+                "confirmation": {
+                    "request_id": "REQ-9001",
+                    "customer_name": "Test Customer",
+                    "payout": 1200.0,
+                },
+            },
+            headers={"Authorization": f"Bearer {dana_token}"},
+        )
+
+        next_result = AgentCallResult("refused", "Runtime busy")
+        confirm_failed = client.post(
+            f"/api/copilot/conversations/{conv_id}/turns/{turn_id}/confirm",
+            json={"approved": True, "note": "Go ahead"},
+            headers={"Authorization": f"Bearer {dana_token}"},
+        )
+        assert confirm_failed.status_code == 200
+        confirm_body = confirm_failed.json()
+        assert confirm_body["call_state"] == "refused"
+        assert confirm_body["conversation"]["status"] == "waiting_confirmation"
+        waiting_turn = next(
+            t for t in confirm_body["conversation"]["turns"] if t["turn_id"] == turn_id
+        )
+        assert waiting_turn["status"] == "waiting_confirmation"
+        assert waiting_turn["error"] == "Runtime busy"
+        assert waiting_turn["confirmation"]["request_id"] == "REQ-9001"

@@ -161,3 +161,71 @@ def test_runtime_route_config_session_and_outcomes(monkeypatch):
         "response": io.BytesIO(b'{"accepted":'),
     }
     assert agent_service.call_agent({"operation": "work_run"}).state == "uncertain"
+
+
+def test_call_copilot_service_url_and_runtime_conflict_recovery(monkeypatch):
+    monkeypatch.delenv("UNDERCOVER_COPILOT", raising=False)
+    monkeypatch.delenv("UNDERCOVER_COPILOT_RUNTIME", raising=False)
+    assert agent_service.copilot_service_url() == "http://127.0.0.1:8081"
+    monkeypatch.setenv("UNDERCOVER_COPILOT", "http://copilot.internal:8080/")
+    assert agent_service.copilot_service_url() == "http://copilot.internal:8080"
+
+    seen_urls: list[str] = []
+
+    class FakeHttpResponse:
+        def __init__(self, status_code: int, payload: dict[str, Any]) -> None:
+            self.status_code = status_code
+            self._payload = payload
+            self.text = json.dumps(payload)
+
+        def json(self) -> Any:
+            return self._payload
+
+    def fake_post(url: str, **kwargs: Any) -> FakeHttpResponse:
+        seen_urls.append(url)
+        if kwargs["json"].get("approved") is False:
+            return FakeHttpResponse(200, {"status": "rejected", "reason": "Denied"})
+        return FakeHttpResponse(200, {"status": "accepted"})
+
+    monkeypatch.setenv("UNDERCOVER_API_KEY", TEST_KEY)
+    monkeypatch.setattr(agent_service.httpx, "post", fake_post)
+    assert agent_service.call_copilot(
+        {"action": "copilot_turn"}, conversation_id="CONV-1"
+    ) == agent_service.AgentCallResult("accepted")
+    assert seen_urls[0] == "http://copilot.internal:8080/invocations"
+    assert agent_service.call_copilot(
+        {"action": "copilot_resume", "approved": False}, conversation_id="CONV-1"
+    ) == agent_service.AgentCallResult("refused", "Denied")
+
+    # Runtime path: ConflictException on first attempt recovers on retry
+    session = agent_service.copilot_runtime_session_id("CONV-123")
+    assert session.startswith("shoppie-copilot-")
+    assert len(session) >= 33
+    monkeypatch.setenv(
+        "UNDERCOVER_COPILOT_RUNTIME",
+        "arn:aws:bedrock-agentcore:us-east-1:111:runtime/copilot",
+    )
+    sessions_tried: list[str] = []
+
+    class RetryClient:
+        def invoke_agent_runtime(self, **kwargs: Any) -> dict[str, Any]:
+            sessions_tried.append(kwargs["runtimeSessionId"])
+            if len(sessions_tried) == 1:
+                raise ClientError(
+                    {"Error": {"Code": "ConflictException", "Message": "Busy"}},
+                    "InvokeAgentRuntime",
+                )
+            return {
+                "statusCode": 200,
+                "response": io.BytesIO(b'{"status": "accepted"}'),
+            }
+
+    monkeypatch.setattr(agent_service.boto3, "client", lambda *_a, **_k: RetryClient())
+    monkeypatch.setattr(agent_service.time, "sleep", lambda _s: None)
+    res = agent_service.call_copilot(
+        {"action": "copilot_turn"}, conversation_id="CONV-123"
+    )
+    assert res == agent_service.AgentCallResult("accepted")
+    assert len(sessions_tried) == 2
+    assert sessions_tried[0] == session
+    assert sessions_tried[1] != session
