@@ -83,11 +83,11 @@ Implement the hand-crafted synchronous LangGraph `StateGraph` (`model -> ToolNod
 - `runtime/copilot_main.py`: Thin runtime launcher running `agent.copilot_entrypoint:app` (`host="0.0.0.0", port=8080`), matching `runtime/main.py`.
 
 **Success criteria:**
-- [ ] `agent/copilot_graph.py` constructs a manual `StateGraph` (`model`, `tools` `ToolNode`, `confirm_sign_off`) without `create_agent`, remaining synchronous throughout.
-- [ ] `confirm_sign_off` contains only the `interrupt()` pause and post-resume decision routing so re-running the node from the top on `Command(resume=...)` never duplicates side effects.
-- [ ] Resuming a paused conversation from a brand-new checkpointer/Runtime instance (`thread_id=conversation_id`) with a fresh ephemeral `handler_token` completes the sign-off (`approved=True`) or cancels cleanly (`approved=False`) and generates the assistant's closing confirmation.
-- [ ] No auth tokens appear inside saved `PostgresSaver` checkpoint rows or state `messages`.
-- [ ] `uv run pytest agent/tests/test_copilot_graph.py agent/tests/test_copilot_entrypoint.py` passes including pause/resume across separate graph instances and permission denial cases.
+- [x] `agent/copilot_graph.py` constructs a manual `StateGraph` (`model`, `tools` `ToolNode`, `confirm_sign_off`) without `create_agent`, remaining synchronous throughout.
+- [x] `confirm_sign_off` contains only the `interrupt()` pause and post-resume decision routing so re-running the node from the top on `Command(resume=...)` never duplicates side effects.
+- [x] Resuming a paused conversation from a brand-new checkpointer/Runtime instance (`thread_id=conversation_id`) with a fresh ephemeral `handler_token` completes the sign-off (`approved=True`) or cancels cleanly (`approved=False`) and generates the assistant's closing confirmation.
+- [x] No auth tokens appear inside saved `PostgresSaver` checkpoint rows or state `messages`.
+- [x] `uv run pytest agent/tests/test_copilot_graph.py agent/tests/test_copilot_entrypoint.py` passes including pause/resume across separate graph instances and permission denial cases.
 
 ---
 
