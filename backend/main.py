@@ -6,7 +6,7 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.openapi.utils import get_openapi
@@ -16,6 +16,12 @@ from mangum import Mangum
 from pydantic import BaseModel, Field, field_validator
 
 from backend import agent_service
+from backend.handlers import (
+    HandlerProfile,
+    check_sign_off_permission,
+    list_dev_handlers,
+    resolve_handler,
+)
 from backend.instructions import QUEUE_INSTRUCTIONS, REQUEST_INSTRUCTIONS
 from backend.models import DecisionKind, DecisionRequest
 from backend.policies import list_policies, read_section
@@ -177,6 +183,68 @@ class RunFinishInput(BaseModel):
     summary: str
 
 
+class QualityRunInput(BaseModel):
+    """Scope for a pilot quality benchmark run."""
+
+    scope: Literal["full", "sample"] = "full"
+
+
+class ConversationCreateInput(BaseModel):
+    """Initial title for a new Copilot conversation."""
+
+    title: str = "New conversation"
+
+
+class CopilotTurnInput(BaseModel):
+    """One handler message sent to the Copilot."""
+
+    message: str = Field(min_length=1, max_length=4000)
+    page_path: str = "/"
+    selected_request_id: str = ""
+
+    @field_validator("message")
+    @classmethod
+    def require_non_blank_message(cls, value: str) -> str:
+        """Require non-whitespace text on Copilot prompts."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Message cannot be blank")
+        return stripped
+
+
+class CopilotStepInput(BaseModel):
+    """One progress step reported while the Copilot handles a turn."""
+
+    turn_id: str = Field(min_length=1)
+    kind: Literal["thinking", "tool", "confirmation", "answer", "error"]
+    tool_name: str = ""
+    summary: str = Field(min_length=1)
+    detail: dict[str, Any] = {}
+    duration_ms: int = Field(default=0, ge=0)
+
+
+class CopilotTurnCompleteInput(BaseModel):
+    """Updated state recorded for a Copilot turn."""
+
+    status: Literal["working", "waiting_confirmation", "done", "failed", "stopped"]
+    assistant_message: str = ""
+    confirmation: dict[str, Any] = {}
+    error: str = ""
+
+
+class CopilotConfirmInput(BaseModel):
+    """Handler approval or cancellation for a paused sign-off confirmation."""
+
+    approved: bool
+    note: str = ""
+
+
+class CopilotStopInput(BaseModel):
+    """Reason recorded when stopping an active Copilot turn."""
+
+    reason: str = "Stopped by handler"
+
+
 def store_of(request: Request) -> Store:
     """Return the app's store, creating it lazily when lifespan has not run."""
     store = getattr(request.app.state, "store", None)
@@ -202,18 +270,38 @@ def require_agent_key(request: Request) -> None:
 
 
 def require_shared_read(request: Request) -> None:
-    """Allow dashboard reads or valid agent X-API-Key reads."""
+    """Allow dashboard/handler reads or valid agent X-API-Key reads."""
     if "X-API-Key" in request.headers:
         require_agent_key(request)
+        return
+    if "Authorization" in request.headers:
+        resolve_handler(request)
 
 
-def require_support_handler(request: Request) -> None:
-    """Refuse support handler actions authenticated only with the agent X-API-Key."""
-    if "X-API-Key" in request.headers:
+def require_support_handler(request: Request) -> HandlerProfile:
+    """Identify the support handler and reject agent X-API-Key credentials."""
+    handler_profile, _mode = resolve_handler(request)
+    return handler_profile
+
+
+HandlerDep = Annotated[HandlerProfile, Depends(require_support_handler)]
+
+
+def require_owned_conversation(
+    store: Store, conversation_id: str, handler_profile: HandlerProfile
+) -> dict[str, Any]:
+    """Return a conversation owned by the caller or raise 404/403."""
+    owner = store.conversation_owner(conversation_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if owner != handler_profile.handler_id:
         raise HTTPException(
-            status_code=401,
-            detail="Agent API key cannot stand in for a support handler",
+            status_code=403, detail="Conversation belongs to another handler"
         )
+    conversation = store.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
 
 
 def require_request(store: Store, request_id: str) -> dict[str, Any]:
@@ -494,18 +582,30 @@ def record_failure(request_id: str, request: Request) -> dict[str, str]:
 @app.post(
     "/api/requests/{request_id}/review",
     operation_id="review_request",
-    dependencies=[Depends(require_support_handler)],
 )
 def review_request(
     request_id: str,
     review: ReviewInput,
     request: Request,
+    handler_profile: HandlerDep,
 ) -> dict[str, Any]:
     """Record a support decision and ask the agent to finish any paused thread."""
     store = store_of(request)
     result = require_request(store, request_id)
     if result["status"] not in {"waiting_for_agent_review", "decided"}:
         raise HTTPException(status_code=409, detail="Request is not ready for review")
+    rec = result.get("recommendation") or {}
+    payout = rec.get("payout")
+    if payout is None:
+        payout = rec.get("refund_amount")
+    if review.outcome == "approve":
+        allowed, reason = check_sign_off_permission(
+            handler_profile,
+            float(payout) if isinstance(payout, (int, float)) else None,
+            MAX_REFUND_LIMIT,
+        )
+        if not allowed:
+            raise HTTPException(status_code=403, detail=reason or "Sign-off denied")
     saved_review = {
         "outcome": review.outcome,
         "notes": review.notes,
@@ -753,6 +853,265 @@ def finish_run(run_id: str, finish: RunFinishInput, request: Request) -> dict[st
     stop_reason = finish.summary if finish.status == "failed" else None
     store.finish_run(run_id, finish.status, finish.summary, stop_reason=stop_reason)
     return {"run_id": run_id, "status": finish.status}
+
+
+@app.get(
+    "/api/settings",
+    operation_id="get_settings",
+    dependencies=[Depends(require_shared_read)],
+)
+def get_settings(request: Request) -> dict[str, Any]:
+    """Return Shoppie's pilot settings and approval thresholds."""
+    return store_of(request).settings()
+
+
+@app.post(
+    "/api/quality_runs",
+    operation_id="start_quality_run",
+    dependencies=[Depends(require_support_handler)],
+)
+def start_quality_run(payload: QualityRunInput, request: Request) -> dict[str, Any]:
+    """Start a quality benchmark run over sample or full Shoppie cases."""
+    return store_of(request).create_benchmark(payload.scope)
+
+
+@app.get(
+    "/api/quality_runs/current",
+    operation_id="get_current_quality_run",
+    dependencies=[Depends(require_shared_read)],
+)
+def get_current_quality_run(request: Request) -> dict[str, Any] | None:
+    """Return the latest quality benchmark run."""
+    return store_of(request).current_benchmark()
+
+
+@app.get(
+    "/api/quality_runs/{benchmark_id}",
+    operation_id="get_quality_run",
+    dependencies=[Depends(require_shared_read)],
+)
+def get_quality_run(benchmark_id: str, request: Request) -> dict[str, Any]:
+    """Return one quality benchmark run."""
+    benchmark = store_of(request).get_benchmark(benchmark_id)
+    if benchmark is None:
+        raise HTTPException(status_code=404, detail="Quality run not found")
+    return benchmark
+
+
+@app.get(
+    "/api/copilot/me",
+    operation_id="copilot_me",
+)
+def copilot_me(request: Request) -> dict[str, Any]:
+    """Return the authenticated support handler and available dev switcher roles."""
+    handler_profile, mode = resolve_handler(request)
+    return {
+        "handler": handler_profile.to_dict(mode),
+        "dev_handlers": list_dev_handlers() if mode == "dev" else [],
+    }
+
+
+@app.get(
+    "/api/copilot/overview",
+    operation_id="get_copilot_overview",
+    dependencies=[Depends(require_support_handler)],
+)
+def get_copilot_overview(request: Request) -> dict[str, Any]:
+    """Return queue counts, active run state, and deterministic success criteria."""
+    return store_of(request).copilot_overview()
+
+
+@app.get(
+    "/api/copilot/customers/{customer_id}",
+    operation_id="get_customer_history",
+    dependencies=[Depends(require_support_handler)],
+)
+def get_customer_history(customer_id: str, request: Request) -> dict[str, Any]:
+    """Return one customer's orders and support requests."""
+    history = store_of(request).get_customer_history(customer_id)
+    if history is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return history
+
+
+@app.get(
+    "/api/copilot/conversations",
+    operation_id="list_copilot_conversations",
+)
+def list_copilot_conversations(
+    request: Request,
+    handler_profile: HandlerDep,
+) -> list[dict[str, Any]]:
+    """List the caller handler's Copilot conversations."""
+    return store_of(request).list_conversations(handler_profile.handler_id)
+
+
+@app.post(
+    "/api/copilot/conversations",
+    operation_id="create_copilot_conversation",
+)
+def create_copilot_conversation(
+    payload: ConversationCreateInput,
+    request: Request,
+    handler_profile: HandlerDep,
+) -> dict[str, Any]:
+    """Create a new Copilot conversation for the caller handler."""
+    return store_of(request).create_conversation(
+        handler_profile.handler_id, payload.title
+    )
+
+
+@app.get(
+    "/api/copilot/conversations/{conversation_id}",
+    operation_id="get_copilot_conversation",
+)
+def get_copilot_conversation(
+    conversation_id: str,
+    request: Request,
+    handler_profile: HandlerDep,
+) -> dict[str, Any]:
+    """Return one Copilot conversation with its turns and recorded steps."""
+    return require_owned_conversation(
+        store_of(request), conversation_id, handler_profile
+    )
+
+
+@app.post(
+    "/api/copilot/conversations/{conversation_id}/turns",
+    operation_id="create_copilot_turn",
+)
+def create_copilot_turn(
+    conversation_id: str,
+    payload: CopilotTurnInput,
+    request: Request,
+    handler_profile: HandlerDep,
+) -> dict[str, Any]:
+    """Start one Copilot turn on an idle conversation owned by the caller."""
+    store = store_of(request)
+    require_owned_conversation(store, conversation_id, handler_profile)
+    turn = store.start_copilot_turn(
+        conversation_id, handler_profile.handler_id, payload.message
+    )
+    if turn is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Conversation already has an active or waiting turn",
+        )
+    return {"conversation_id": conversation_id, "turn": turn, "call_state": "accepted"}
+
+
+@app.post(
+    "/api/copilot/conversations/{conversation_id}/steps",
+    operation_id="add_copilot_step",
+)
+def add_copilot_step(
+    conversation_id: str,
+    payload: CopilotStepInput,
+    request: Request,
+    handler_profile: HandlerDep,
+) -> dict[str, Any]:
+    """Append one progress step for an active Copilot turn."""
+    store = store_of(request)
+    require_owned_conversation(store, conversation_id, handler_profile)
+    step = store.append_copilot_step(
+        conversation_id,
+        payload.turn_id,
+        {
+            "kind": payload.kind,
+            "summary": payload.summary,
+            "tool_name": payload.tool_name,
+            "detail": payload.detail or None,
+            "duration_ms": payload.duration_ms,
+        },
+    )
+    if step is None:
+        raise HTTPException(status_code=404, detail="Copilot turn not found")
+    return step
+
+
+@app.post(
+    "/api/copilot/conversations/{conversation_id}/turns/{turn_id}/complete",
+    operation_id="complete_copilot_turn",
+)
+def complete_copilot_turn(
+    conversation_id: str,
+    turn_id: str,
+    payload: CopilotTurnCompleteInput,
+    request: Request,
+    handler_profile: HandlerDep,
+) -> dict[str, Any]:
+    """Record a Copilot turn's completion, confirmation pause, or failure."""
+    store = store_of(request)
+    require_owned_conversation(store, conversation_id, handler_profile)
+    updated = store.update_copilot_turn(
+        conversation_id,
+        turn_id,
+        payload.status,
+        {
+            "assistant_message": payload.assistant_message or None,
+            "confirmation": payload.confirmation or None,
+            "error": payload.error or None,
+        },
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Copilot turn not found")
+    return updated
+
+
+@app.post(
+    "/api/copilot/conversations/{conversation_id}/turns/{turn_id}/confirm",
+    operation_id="confirm_copilot_turn",
+)
+def confirm_copilot_turn(
+    conversation_id: str,
+    turn_id: str,
+    payload: CopilotConfirmInput,
+    request: Request,
+    handler_profile: HandlerDep,
+) -> dict[str, Any]:
+    """Confirm or cancel a paused Copilot sign-off turn."""
+    store = store_of(request)
+    conv = require_owned_conversation(store, conversation_id, handler_profile)
+    matching = next(
+        (t for t in conv["turns"] if t["turn_id"] == turn_id),
+        None,
+    )
+    if matching is None:
+        raise HTTPException(status_code=404, detail="Copilot turn not found")
+    if payload.approved:
+        confirmation = matching.get("confirmation") or {}
+        payout = confirmation.get("payout")
+        allowed, reason = check_sign_off_permission(
+            handler_profile,
+            float(payout) if isinstance(payout, (int, float)) else None,
+            MAX_REFUND_LIMIT,
+        )
+        if not allowed:
+            raise HTTPException(status_code=403, detail=reason or "Sign-off denied")
+    updated = store.resume_copilot_turn(conversation_id, turn_id)
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Turn is not waiting confirmation")
+    return {"conversation": updated, "call_state": "accepted"}
+
+
+@app.post(
+    "/api/copilot/conversations/{conversation_id}/turns/{turn_id}/stop",
+    operation_id="stop_copilot_turn",
+)
+def stop_copilot_turn(
+    conversation_id: str,
+    turn_id: str,
+    payload: CopilotStopInput,
+    request: Request,
+    handler_profile: HandlerDep,
+) -> dict[str, Any]:
+    """Stop a working or paused Copilot turn."""
+    store = store_of(request)
+    require_owned_conversation(store, conversation_id, handler_profile)
+    updated = store.stop_copilot_turn(conversation_id, turn_id, payload.reason)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Copilot turn not found")
+    return updated
 
 
 handler = Mangum(app, lifespan="off")

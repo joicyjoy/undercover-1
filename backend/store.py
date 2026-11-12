@@ -46,6 +46,16 @@ SCHEMA = "undercover"
 MAX_POOL_SIZE = 2
 STALE_WORK_SECONDS = 300
 STALE_WORK_REASON = "The agent stopped answering"
+STALE_COPILOT_SECONDS = 1200
+STALE_COPILOT_REASON = "Turn stopped after 20 minutes without an answer"
+PILOT_SETTINGS = {
+    "approval_limit": 10000.0,
+    "straight_through_target": 0.70,
+    "accuracy_objective": 0.85,
+    "default_work_cap": 5,
+    "currency": "INR",
+    "timezone": "Asia/Kolkata",
+}
 MAX_OVERFLOW = 2
 POOLER_PORT = 6432
 MAX_ATTEMPTS = 2
@@ -166,6 +176,79 @@ calculations = Table(
     Column("lines", Text, nullable=False),
     Column("payout", Float, nullable=False),
     Column("calculated_at", Text, nullable=False),
+)
+
+benchmarks = Table(
+    "benchmarks",
+    metadata,
+    Column("benchmark_id", Text, primary_key=True),
+    Column("scope", Text, nullable=False),
+    Column("total_cases", Integer, nullable=False),
+    Column("completed_cases", Integer, nullable=False),
+    Column("passed_cases", Integer, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("accuracy", Float),
+    Column("summary", Text),
+    Column("started_at", Text, nullable=False),
+    Column("finished_at", Text),
+)
+
+copilot_conversations = Table(
+    "copilot_conversations",
+    metadata,
+    Column("conversation_id", Text, primary_key=True),
+    Column("handler_id", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("active_turn_id", Text),
+    Column("turn_started_at", Text),
+    Column("created_at", Text, nullable=False),
+    Column("updated_at", Text, nullable=False),
+)
+
+copilot_turns = Table(
+    "copilot_turns",
+    metadata,
+    Column("turn_id", Text, primary_key=True),
+    Column(
+        "conversation_id",
+        Text,
+        ForeignKey("copilot_conversations.conversation_id"),
+        nullable=False,
+    ),
+    Column("handler_id", Text, nullable=False),
+    Column("user_message", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("assistant_message", Text),
+    Column("confirmation_json", Text),
+    Column("error", Text),
+    Column("created_at", Text, nullable=False),
+    Column("updated_at", Text, nullable=False),
+)
+
+copilot_steps = Table(
+    "copilot_steps",
+    metadata,
+    Column("step_id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "conversation_id",
+        Text,
+        ForeignKey("copilot_conversations.conversation_id"),
+        nullable=False,
+    ),
+    Column(
+        "turn_id",
+        Text,
+        ForeignKey("copilot_turns.turn_id"),
+        nullable=False,
+    ),
+    Column("seq", Integer, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("tool_name", Text),
+    Column("summary", Text, nullable=False),
+    Column("detail_json", Text),
+    Column("duration_ms", Integer),
+    Column("created_at", Text, nullable=False),
 )
 
 
@@ -1142,3 +1225,634 @@ class Store:
     def decode(value: str | None) -> Any:
         """Decode stored JSON when a value exists."""
         return json.loads(value) if value else None
+
+    @staticmethod
+    def settings() -> dict[str, Any]:
+        """Return Shoppie's pilot settings and success thresholds."""
+        return dict(PILOT_SETTINGS)
+
+    def get_customer_history(self, customer_id: str) -> dict[str, Any] | None:
+        """Return a customer's orders and support requests without hidden labels."""
+        customers = list(json.loads(DATA_PATH.read_text(encoding="utf-8"))["customers"])
+        if SECURITY_DATA_PATH.is_file():
+            customers.extend(
+                json.loads(SECURITY_DATA_PATH.read_text(encoding="utf-8"))["customers"]
+            )
+        matched = next(
+            (item for item in customers if item.get("customer_id") == customer_id),
+            None,
+        )
+        with self.engine.begin() as connection:
+            req_rows = (
+                connection.execute(
+                    select(support_requests)
+                    .where(support_requests.c.customer_id == customer_id)
+                    .order_by(
+                        support_requests.c.created_at, support_requests.c.request_id
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        if matched is None and not req_rows:
+            return None
+        safe_orders = [
+            self.safe_order(order)
+            for order in (matched.get("orders", []) if matched else [])
+        ]
+        requests = [
+            {
+                "request_id": row["request_id"],
+                "order_id": row["order_id"],
+                "type": row["request_type"],
+                "created_at": row["created_at"],
+                "status": row["queue_status"],
+                "attempts": row["attempts"],
+                "recommendation": self.decode(row["recommendation_json"]),
+                "review": self.decode(row["review_json"]),
+                "sent_back": self.decode(row["sent_back_json"]) or [],
+            }
+            for row in req_rows
+        ]
+        name = (
+            matched["name"]
+            if matched is not None
+            else str(req_rows[0]["customer_name"])
+        )
+        return {
+            "customer_id": customer_id,
+            "customer_name": name,
+            "orders": safe_orders,
+            "requests": requests,
+        }
+
+    def create_benchmark(self, scope: Literal["full", "sample"]) -> dict[str, Any]:
+        """Record a pilot quality benchmark run across Shoppie requests."""
+        all_requests = self.list_requests()
+        target_requests = all_requests[:5] if scope == "sample" else all_requests
+        benchmark_id = f"QUAL-{uuid4().hex[:8].upper()}"
+        started_at = now()
+        total = len(target_requests)
+        passed = 0
+        for item in target_requests:
+            rec = item.get("recommendation")
+            sent_back = item.get("sent_back") or []
+            if (
+                item["status"] in {"waiting_for_agent_review", "decided"}
+                and rec
+                and not sent_back
+            ):
+                passed += 1
+        completed = sum(
+            1
+            for item in target_requests
+            if item["status"] in {"waiting_for_agent_review", "decided", "failed"}
+        )
+        accuracy = round(passed / completed, 4) if completed > 0 else None
+        status = "finished" if completed == total and total > 0 else "running"
+        summary = (
+            f"Evaluated {completed} of {total} requests "
+            f"({passed} passed without send-back)."
+            if completed > 0
+            else f"Queued quality check across {total} Shoppie requests."
+        )
+        row = {
+            "benchmark_id": benchmark_id,
+            "scope": scope,
+            "total_cases": total,
+            "completed_cases": completed,
+            "passed_cases": passed,
+            "status": status,
+            "accuracy": accuracy,
+            "summary": summary,
+            "started_at": started_at,
+            "finished_at": now() if status == "finished" else None,
+        }
+        with self.engine.begin() as connection:
+            connection.execute(insert(benchmarks).values(**row))
+        return row
+
+    def get_benchmark(self, benchmark_id: str) -> dict[str, Any] | None:
+        """Return one quality benchmark run or None."""
+        with self.engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(benchmarks).where(benchmarks.c.benchmark_id == benchmark_id)
+                )
+                .mappings()
+                .first()
+            )
+        return dict(row) if row is not None else None
+
+    def current_benchmark(self) -> dict[str, Any] | None:
+        """Return the latest quality benchmark run or None."""
+        with self.engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(benchmarks).order_by(benchmarks.c.started_at.desc()).limit(1)
+                )
+                .mappings()
+                .first()
+            )
+        return dict(row) if row is not None else None
+
+    def _accuracy_criterion(self, connection: Any) -> dict[str, Any]:
+        latest_bench = (
+            connection.execute(
+                select(benchmarks)
+                .where(benchmarks.c.status == "finished")
+                .order_by(benchmarks.c.started_at.desc())
+                .limit(1)
+            )
+            .mappings()
+            .first()
+        )
+        accuracy_target = float(PILOT_SETTINGS["accuracy_objective"])
+        if latest_bench is not None and latest_bench["accuracy"] is not None:
+            accuracy_val = float(latest_bench["accuracy"])
+            return {
+                "target": accuracy_target,
+                "rate": accuracy_val,
+                "benchmark_id": latest_bench["benchmark_id"],
+                "met": accuracy_val >= accuracy_target,
+                "reason": (
+                    f"Latest benchmark {latest_bench['benchmark_id']} scored "
+                    f"{accuracy_val * 100:.1f}% vs {accuracy_target * 100:.0f}%."
+                ),
+            }
+        return {
+            "target": accuracy_target,
+            "rate": None,
+            "benchmark_id": None,
+            "met": None,
+            "reason": "No completed quality benchmark run yet.",
+        }
+
+    @staticmethod
+    def _over_limit_criterion(
+        over_limit_decided: list[dict[str, Any]], approval_limit: float
+    ) -> dict[str, Any]:
+        signed_off = sum(
+            1
+            for item in over_limit_decided
+            if (item.get("review") or {}).get("reviewed_by")
+        )
+        if not over_limit_decided:
+            return {
+                "approval_limit": approval_limit,
+                "over_limit_decided_count": 0,
+                "signed_off_count": 0,
+                "met": True,
+                "reason": (
+                    f"No payouts above ₹{approval_limit:,.2f} completed yet, "
+                    "so all completed over-limit payouts carry human sign-off."
+                ),
+            }
+        all_signed = signed_off == len(over_limit_decided)
+        return {
+            "approval_limit": approval_limit,
+            "over_limit_decided_count": len(over_limit_decided),
+            "signed_off_count": signed_off,
+            "met": all_signed,
+            "reason": (
+                f"{signed_off} of {len(over_limit_decided)} payouts above "
+                f"₹{approval_limit:,.2f} carry a human sign-off."
+            ),
+        }
+
+    def copilot_overview(self) -> dict[str, Any]:
+        """Compute queue metrics, active runs, and deterministic success criteria."""
+        all_requests = self.list_requests()
+        approval_limit = float(PILOT_SETTINGS["approval_limit"])
+        status_counts: dict[str, int] = {}
+        waiting_ids: list[str] = []
+        sent_back_ids: list[str] = []
+        pending_review_ids: list[str] = []
+        over_limit_pending_ids: list[str] = []
+        processed: list[dict[str, Any]] = []
+        over_limit_decided: list[dict[str, Any]] = []
+
+        for item in all_requests:
+            status = item["status"]
+            status_counts[status] = status_counts.get(status, 0) + 1
+            if status == "waiting":
+                waiting_ids.append(item["request_id"])
+            elif status == "sent_back":
+                sent_back_ids.append(item["request_id"])
+            elif status == "waiting_for_agent_review":
+                pending_review_ids.append(item["request_id"])
+            rec = item.get("recommendation") or {}
+            payout = rec.get("payout")
+            is_over_limit = isinstance(payout, (int, float)) and payout > approval_limit
+            if status == "waiting_for_agent_review" and is_over_limit:
+                over_limit_pending_ids.append(item["request_id"])
+            if (
+                status in {"waiting_for_agent_review", "decided"}
+                and rec
+                and rec.get("decided_by") not in {"Security check", "Payment hold"}
+            ):
+                processed.append(item)
+            if status == "decided" and is_over_limit:
+                over_limit_decided.append(item)
+
+        straight_target = float(PILOT_SETTINGS["straight_through_target"])
+        straight_count = sum(
+            1
+            for item in processed
+            if len(item.get("sent_back") or []) == 0
+            and int(item.get("attempts") or 0) <= 1
+        )
+        straight_rate = round(straight_count / len(processed), 4) if processed else None
+        straight_met = (
+            straight_rate >= straight_target if straight_rate is not None else None
+        )
+        with self.engine.begin() as connection:
+            accuracy_criterion = self._accuracy_criterion(connection)
+        over_limit_criterion = self._over_limit_criterion(
+            over_limit_decided, approval_limit
+        )
+        return {
+            "total_requests": len(all_requests),
+            "status_counts": status_counts,
+            "waiting_request_ids": waiting_ids,
+            "sent_back_request_ids": sent_back_ids,
+            "pending_review_request_ids": pending_review_ids,
+            "over_limit_pending_request_ids": over_limit_pending_ids,
+            "current_run": self.current_run(),
+            "current_benchmark": self.current_benchmark(),
+            "settings": self.settings(),
+            "success_criteria": {
+                "straight_through": {
+                    "target": straight_target,
+                    "processed_count": len(processed),
+                    "straight_through_count": straight_count,
+                    "rate": straight_rate,
+                    "met": straight_met,
+                    "reason": (
+                        f"{straight_count} of {len(processed)} processed requests went "
+                        "straight through without send-back."
+                        if processed
+                        else "No processed requests yet."
+                    ),
+                },
+                "accuracy": accuracy_criterion,
+                "over_limit_sign_offs": over_limit_criterion,
+            },
+        }
+
+    @staticmethod
+    def _expire_stale_turns(connection: Any, conversation_id: str) -> None:
+        """Mark turns active longer than 20 minutes as stopped."""
+        conv = (
+            connection.execute(
+                select(copilot_conversations).where(
+                    copilot_conversations.c.conversation_id == conversation_id
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if (
+            conv is None
+            or conv["status"] != "working"
+            or not conv["turn_started_at"]
+            or not conv["active_turn_id"]
+        ):
+            return
+        started = datetime.fromisoformat(conv["turn_started_at"])
+        if (datetime.now(UTC) - started).total_seconds() < STALE_COPILOT_SECONDS:
+            return
+        finished_at = now()
+        connection.execute(
+            update(copilot_turns)
+            .where(
+                copilot_turns.c.turn_id == conv["active_turn_id"],
+                copilot_turns.c.status == "working",
+            )
+            .values(
+                status="stopped",
+                error=STALE_COPILOT_REASON,
+                updated_at=finished_at,
+            )
+        )
+        connection.execute(
+            update(copilot_conversations)
+            .where(copilot_conversations.c.conversation_id == conversation_id)
+            .values(
+                status="stopped",
+                active_turn_id=None,
+                turn_started_at=None,
+                updated_at=finished_at,
+            )
+        )
+
+    def list_conversations(self, handler_id: str) -> list[dict[str, Any]]:
+        """List a handler's Copilot conversations ordered by most recent activity."""
+        with self.engine.begin() as connection:
+            rows = (
+                connection.execute(
+                    select(copilot_conversations)
+                    .where(copilot_conversations.c.handler_id == handler_id)
+                    .order_by(copilot_conversations.c.updated_at.desc())
+                )
+                .mappings()
+                .all()
+            )
+            for row in rows:
+                self._expire_stale_turns(connection, row["conversation_id"])
+            refreshed = (
+                connection.execute(
+                    select(copilot_conversations)
+                    .where(copilot_conversations.c.handler_id == handler_id)
+                    .order_by(copilot_conversations.c.updated_at.desc())
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(row) for row in refreshed]
+
+    def create_conversation(
+        self, handler_id: str, title: str = "New conversation"
+    ) -> dict[str, Any]:
+        """Create one empty Copilot conversation for a handler."""
+        conversation_id = f"CONV-{uuid4().hex[:10].upper()}"
+        timestamp = now()
+        row = {
+            "conversation_id": conversation_id,
+            "handler_id": handler_id,
+            "title": title.strip() or "New conversation",
+            "status": "idle",
+            "active_turn_id": None,
+            "turn_started_at": None,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        with self.engine.begin() as connection:
+            connection.execute(insert(copilot_conversations).values(**row))
+        return {**row, "turns": [], "steps": []}
+
+    def conversation_owner(self, conversation_id: str) -> str | None:
+        """Return the owning handler_id for a conversation, or None if missing."""
+        with self.engine.begin() as connection:
+            return connection.execute(
+                select(copilot_conversations.c.handler_id).where(
+                    copilot_conversations.c.conversation_id == conversation_id
+                )
+            ).scalar_one_or_none()
+
+    def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
+        """Return a conversation with turns and steps, expiring stale work."""
+        with self.engine.begin() as connection:
+            self._expire_stale_turns(connection, conversation_id)
+            conv = (
+                connection.execute(
+                    select(copilot_conversations).where(
+                        copilot_conversations.c.conversation_id == conversation_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if conv is None:
+                return None
+            turn_rows = (
+                connection.execute(
+                    select(copilot_turns)
+                    .where(copilot_turns.c.conversation_id == conversation_id)
+                    .order_by(copilot_turns.c.created_at, copilot_turns.c.turn_id)
+                )
+                .mappings()
+                .all()
+            )
+            step_rows = (
+                connection.execute(
+                    select(copilot_steps)
+                    .where(copilot_steps.c.conversation_id == conversation_id)
+                    .order_by(copilot_steps.c.step_id)
+                )
+                .mappings()
+                .all()
+            )
+        turns = [
+            {
+                **dict(t),
+                "confirmation": self.decode(t["confirmation_json"]),
+            }
+            for t in turn_rows
+        ]
+        for t in turns:
+            t.pop("confirmation_json", None)
+        steps = []
+        for s in step_rows:
+            item = dict(s)
+            raw_detail = item.pop("detail_json", None)
+            item["detail"] = self.decode(raw_detail)
+            steps.append(item)
+        return {**dict(conv), "turns": turns, "steps": steps}
+
+    def start_copilot_turn(
+        self, conversation_id: str, handler_id: str, user_message: str
+    ) -> dict[str, Any] | None:
+        """Start one Copilot turn if no active turn is running on this conversation."""
+        turn_id = f"TURN-{uuid4().hex[:10].upper()}"
+        timestamp = now()
+        short_title = " ".join(user_message.split())[:64] or "New conversation"
+        with self.engine.begin() as connection:
+            self._expire_stale_turns(connection, conversation_id)
+            conv = (
+                connection.execute(
+                    select(copilot_conversations).where(
+                        copilot_conversations.c.conversation_id == conversation_id,
+                        copilot_conversations.c.handler_id == handler_id,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if conv is None:
+                return None
+            if conv["status"] in {"working", "waiting_confirmation"}:
+                return None
+            row = {
+                "turn_id": turn_id,
+                "conversation_id": conversation_id,
+                "handler_id": handler_id,
+                "user_message": user_message,
+                "status": "working",
+                "assistant_message": None,
+                "confirmation_json": None,
+                "error": None,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            }
+            connection.execute(insert(copilot_turns).values(**row))
+            next_title = (
+                short_title if conv["title"] == "New conversation" else conv["title"]
+            )
+            connection.execute(
+                update(copilot_conversations)
+                .where(copilot_conversations.c.conversation_id == conversation_id)
+                .values(
+                    title=next_title,
+                    status="working",
+                    active_turn_id=turn_id,
+                    turn_started_at=timestamp,
+                    updated_at=timestamp,
+                )
+            )
+        return {**row, "confirmation": None}
+
+    def append_copilot_step(
+        self,
+        conversation_id: str,
+        turn_id: str,
+        step_data: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Append one progress step dict to a Copilot turn."""
+        timestamp = now()
+        kind = str(step_data["kind"])
+        summary = str(step_data["summary"])
+        tool_name = str(step_data.get("tool_name") or "")
+        detail = step_data.get("detail")
+        duration_ms = int(step_data.get("duration_ms") or 0)
+        with self.engine.begin() as connection:
+            turn = connection.execute(
+                select(copilot_turns.c.turn_id).where(
+                    copilot_turns.c.turn_id == turn_id,
+                    copilot_turns.c.conversation_id == conversation_id,
+                )
+            ).first()
+            if turn is None:
+                return None
+            max_seq = connection.execute(
+                select(func.coalesce(func.max(copilot_steps.c.seq), 0)).where(
+                    copilot_steps.c.turn_id == turn_id
+                )
+            ).scalar_one()
+            seq = int(max_seq) + 1
+            values = {
+                "conversation_id": conversation_id,
+                "turn_id": turn_id,
+                "seq": seq,
+                "kind": kind,
+                "tool_name": tool_name or None,
+                "summary": summary,
+                "detail_json": json.dumps(detail) if detail is not None else None,
+                "duration_ms": duration_ms,
+                "created_at": timestamp,
+            }
+            res = connection.execute(insert(copilot_steps).values(**values))
+            step_id = (
+                int(res.inserted_primary_key[0]) if res.inserted_primary_key else seq
+            )
+            connection.execute(
+                update(copilot_conversations)
+                .where(copilot_conversations.c.conversation_id == conversation_id)
+                .values(updated_at=timestamp)
+            )
+        return {
+            "step_id": step_id,
+            "conversation_id": conversation_id,
+            "turn_id": turn_id,
+            "seq": seq,
+            "kind": kind,
+            "tool_name": tool_name or None,
+            "summary": summary,
+            "detail": detail,
+            "duration_ms": duration_ms,
+            "created_at": timestamp,
+        }
+
+    def update_copilot_turn(
+        self,
+        conversation_id: str,
+        turn_id: str,
+        status: Literal["working", "waiting_confirmation", "done", "failed", "stopped"],
+        outcome: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Update one turn's status and mirror it onto the parent conversation."""
+        timestamp = now()
+        data = outcome or {}
+        assistant_message = data.get("assistant_message")
+        confirmation = data.get("confirmation")
+        error = data.get("error")
+        with self.engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    select(copilot_turns).where(
+                        copilot_turns.c.turn_id == turn_id,
+                        copilot_turns.c.conversation_id == conversation_id,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is None:
+                return None
+            turn_values: dict[str, Any] = {"status": status, "updated_at": timestamp}
+            if assistant_message is not None:
+                turn_values["assistant_message"] = assistant_message
+            if confirmation is not None:
+                turn_values["confirmation_json"] = json.dumps(confirmation)
+            elif status in {"done", "failed", "stopped"}:
+                turn_values["confirmation_json"] = None
+            if error is not None:
+                turn_values["error"] = error
+            connection.execute(
+                update(copilot_turns)
+                .where(copilot_turns.c.turn_id == turn_id)
+                .values(**turn_values)
+            )
+            conv_values: dict[str, Any] = {
+                "status": status,
+                "updated_at": timestamp,
+            }
+            if status in {"done", "failed", "stopped"}:
+                conv_values["active_turn_id"] = None
+                conv_values["turn_started_at"] = None
+            elif status == "working":
+                conv_values["active_turn_id"] = turn_id
+                conv_values["turn_started_at"] = timestamp
+            connection.execute(
+                update(copilot_conversations)
+                .where(copilot_conversations.c.conversation_id == conversation_id)
+                .values(**conv_values)
+            )
+        return self.get_conversation(conversation_id)
+
+    def resume_copilot_turn(
+        self, conversation_id: str, turn_id: str
+    ) -> dict[str, Any] | None:
+        """Move a turn waiting for confirmation back to working so it can resume."""
+        timestamp = now()
+        with self.engine.begin() as connection:
+            res = connection.execute(
+                update(copilot_turns)
+                .where(
+                    copilot_turns.c.turn_id == turn_id,
+                    copilot_turns.c.conversation_id == conversation_id,
+                    copilot_turns.c.status == "waiting_confirmation",
+                )
+                .values(status="working", updated_at=timestamp)
+            )
+            if res.rowcount != 1:
+                return None
+            connection.execute(
+                update(copilot_conversations)
+                .where(copilot_conversations.c.conversation_id == conversation_id)
+                .values(
+                    status="working",
+                    active_turn_id=turn_id,
+                    turn_started_at=timestamp,
+                    updated_at=timestamp,
+                )
+            )
+        return self.get_conversation(conversation_id)
+
+    def stop_copilot_turn(
+        self, conversation_id: str, turn_id: str, reason: str = "Stopped by handler"
+    ) -> dict[str, Any] | None:
+        """Stop an active or waiting turn cleanly."""
+        return self.update_copilot_turn(
+            conversation_id, turn_id, "stopped", {"error": reason}
+        )

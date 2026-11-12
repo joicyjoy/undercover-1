@@ -126,6 +126,13 @@ def test_api_routes_have_operation_ids_and_no_query_inputs():
         "/api/requests/{request_id}/heartbeat",
         "/api/requests/{request_id}/complete",
         "/api/requests/{request_id}/hold",
+        "/api/quality_runs",
+        "/api/copilot/conversations",
+        "/api/copilot/conversations/{conversation_id}/turns",
+        "/api/copilot/conversations/{conversation_id}/steps",
+        "/api/copilot/conversations/{conversation_id}/turns/{turn_id}/complete",
+        "/api/copilot/conversations/{conversation_id}/turns/{turn_id}/confirm",
+        "/api/copilot/conversations/{conversation_id}/turns/{turn_id}/stop",
     }
 
 
