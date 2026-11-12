@@ -60,11 +60,11 @@ Create the Copilot's synchronous tool suite and memory adapter under `agent/` so
   - Handler memory (`save_handler_memory`, `search_handler_memory`).
 
 **Success criteria:**
-- [ ] Every Copilot tool reads `handler_token` and `handler_id` exclusively from `ToolRuntime.context` and never touches LangGraph `config` or `UNDERCOVER_API_KEY`.
-- [ ] In Gateway mode, Copilot discovers and calls only `undercover-context___*` tools and never exposes or invokes `undercover-app___*` agent tools; locally without `UNDERCOVER_GATEWAY_URL`, it connects directly to `UNDERCOVER_CONTEXT`.
-- [ ] Before requesting sign-off confirmation, code verifies `handler.can_sign_off_over_limit` against `payout` and `approval_limit` (`₹10,000.00`) and refuses immediately without pausing if the handler lacks permission.
-- [ ] `CopilotMemoryStore` scopes reads and writes to `/handlers/{handler_id}/preferences` and `/handlers/{handler_id}/facts` so Dana never sees Marcus's preferences or facts.
-- [ ] Step emission truncates/sanitizes payloads so bearer tokens never appear in step details, memory entries, or logs, and unit tests in `agent/tests/test_copilot_tools.py` and `agent/tests/test_copilot_memory.py` pass against gateway/memory stand-ins.
+- [x] Every Copilot tool reads `handler_token` and `handler_id` exclusively from `ToolRuntime.context` and never touches LangGraph `config` or `UNDERCOVER_API_KEY`.
+- [x] In Gateway mode, Copilot discovers and calls only `undercover-context___*` tools and never exposes or invokes `undercover-app___*` agent tools; locally without `UNDERCOVER_GATEWAY_URL`, it connects directly to `UNDERCOVER_CONTEXT`.
+- [x] Before requesting sign-off confirmation, code verifies `handler.can_sign_off_over_limit` against `payout` and `approval_limit` (`₹10,000.00`) and refuses immediately without pausing if the handler lacks permission.
+- [x] `CopilotMemoryStore` scopes reads and writes to `/handlers/{handler_id}/preferences` and `/handlers/{handler_id}/facts` so Dana never sees Marcus's preferences or facts.
+- [x] Step emission truncates/sanitizes payloads so bearer tokens never appear in step details, memory entries, or logs, and unit tests in `agent/tests/test_copilot_tools.py` and `agent/tests/test_copilot_memory.py` pass against gateway/memory stand-ins.
 
 ---
 
