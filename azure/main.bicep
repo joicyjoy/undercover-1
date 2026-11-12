@@ -146,6 +146,7 @@ resource allowAzureIps 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@
 
 var databaseUrl = 'postgresql://${uriComponent(postgresAdminUser)}:${uriComponent(postgresAdminPassword)}@${postgres.properties.fullyQualifiedDomainName}:5432/${databaseName}?sslmode=require'
 var backendFqdn = '${namePrefix}-backend.${containerEnv.properties.defaultDomain}'
+var backendInternalFqdn = '${namePrefix}-backend-internal.internal.${containerEnv.properties.defaultDomain}'
 var agentInternalFqdn = '${namePrefix}-agent.internal.${containerEnv.properties.defaultDomain}'
 var copilotInternalFqdn = '${namePrefix}-copilot.internal.${containerEnv.properties.defaultDomain}'
 var contextInternalFqdn = '${namePrefix}-context.internal.${containerEnv.properties.defaultDomain}'
@@ -316,6 +317,98 @@ resource backendApp 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
   }
 }
 
+// Same backend image with internal-only ingress and no Easy Auth, so the agent and
+// Copilot can call the API server to server while the public backend stays behind
+// Entra sign-in. Agent routes still require X-API-Key and Copilot calls still carry
+// single-use handler tokens.
+resource backendInternalApp 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
+  name: '${namePrefix}-backend-internal'
+  location: location
+  dependsOn: [
+    acrPullRole
+    postgresDb
+    allowAzureIps
+  ]
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${pullIdentity.id}': {}
+    }
+  }
+  properties: {
+    managedEnvironmentId: containerEnv.id
+    configuration: {
+      registries: [
+        {
+          server: acr.properties.loginServer
+          identity: pullIdentity.id
+        }
+      ]
+      ingress: {
+        external: false
+        targetPort: 8000
+        transport: 'http'
+      }
+      secrets: [
+        {
+          name: 'database-url'
+          value: databaseUrl
+        }
+        {
+          name: 'undercover-api-key'
+          value: undercoverApiKey
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'backend'
+          image: '${acr.properties.loginServer}/shoppie-backend:${imageTag}'
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+          env: [
+            {
+              name: 'DATABASE_URL'
+              secretRef: 'database-url'
+            }
+            {
+              name: 'UNDERCOVER_API_KEY'
+              secretRef: 'undercover-api-key'
+            }
+            {
+              name: 'UNDERCOVER_AGENT'
+              value: 'https://${agentInternalFqdn}'
+            }
+            {
+              name: 'UNDERCOVER_COPILOT'
+              value: 'https://${copilotInternalFqdn}'
+            }
+          ]
+          probes: [
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/api/health'
+                port: 8000
+              }
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              timeoutSeconds: 5
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 1
+      }
+    }
+  }
+}
+
 resource agentApp 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
   name: '${namePrefix}-agent'
   location: location
@@ -386,7 +479,7 @@ resource agentApp 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
               }
               {
                 name: 'UNDERCOVER_API'
-                value: 'https://${backendFqdn}'
+                value: 'https://${backendInternalFqdn}'
               }
               {
                 name: 'UNDERCOVER_CONTEXT'
@@ -504,7 +597,7 @@ resource copilotApp 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
               }
               {
                 name: 'UNDERCOVER_API'
-                value: 'https://${backendFqdn}'
+                value: 'https://${backendInternalFqdn}'
               }
               {
                 name: 'UNDERCOVER_CONTEXT'
