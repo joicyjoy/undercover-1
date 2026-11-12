@@ -326,6 +326,10 @@ it("records a support reviewed outcome and polls until completion", async () => 
       return Promise.resolve(new Response(JSON.stringify(instructions)));
     if (url === "/api/runs/current")
       return Promise.resolve(new Response("null"));
+    if (url.startsWith("/api/copilot/"))
+      return Promise.resolve(
+        new Response(url.endsWith("/conversations") ? "[]" : "{}"),
+      );
     detailCalls += 1;
     let body: unknown = reviewed;
     if (detailCalls === 1) body = reviewDetail;

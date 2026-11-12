@@ -123,11 +123,11 @@ Build the persistent, collapsible Copilot sidebar inside `dashboard/` matching `
 - `dashboard/src/App.tsx` & `dashboard/src/app.css`: Layout integration across Light (`#F0F4F5`/`#FFFFFF`) and Dark (`#04232E`/`#02151C`) palettes, crisp contrast, US English copy, INR (`₹`) + IST formatting, and zero `!` in UI text.
 
 **Success criteria:**
-- [ ] Sidebar opens on initial load, collapses to a slim tab with its own icon, restores collapsed/open preference from `localStorage`, and overlays smoothly on narrow screens.
-- [ ] Underlying request queue, request detail, and action controls remain fully usable alongside the open sidebar and update automatically after the Copilot completes a run, send-back, or sign-off.
-- [ ] While working, live step cards update at ~1s cadence with icon, one-line status, duration, and expandable JSON/detail toggle; errors and `stopped` turns display clearly with recovery.
-- [ ] Sign-off pauses display a `ConfirmationCard` listing request ID, customer, INR payout, and `Confirm sign off` / `Cancel`; `send_back` executes without confirmation; over-limit attempts by Marcus show an immediate permission explanation instead of a confirmation card.
-- [ ] `npm run check:ts` and Vitest (`dashboard/src/*.test.tsx` including new `CopilotSidebar.test.tsx`) pass with zero warnings/errors.
+- [x] Sidebar opens on initial load, collapses to a slim tab with its own icon, restores collapsed/open preference from `localStorage`, and overlays smoothly on narrow screens.
+- [x] Underlying request queue, request detail, and action controls remain fully usable alongside the open sidebar and update automatically after the Copilot completes a run, send-back, or sign-off.
+- [x] While working, live step cards update at ~1s cadence with icon, one-line status, duration, and expandable JSON/detail toggle; errors and `stopped` turns display clearly with recovery.
+- [x] Sign-off pauses display a `ConfirmationCard` listing request ID, customer, INR payout, and `Confirm sign off` / `Cancel`; `send_back` executes without confirmation; over-limit attempts by Marcus show an immediate permission explanation instead of a confirmation card.
+- [x] `npm run check:ts` and Vitest (`dashboard/src/*.test.tsx` including new `CopilotSidebar.test.tsx`) pass with zero warnings/errors.
 
 ---
 

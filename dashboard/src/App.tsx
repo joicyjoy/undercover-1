@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
+import { CopilotSidebar } from "./CopilotSidebar";
+import { readCopilotOpen, writeCopilotOpen } from "./copilotApi";
 import {
   ActionPanel,
   ContextUsed,
+  InstructionsPanel,
   OrderCard,
   ProgressCard,
   QueuePanel,
   RecommendationCard,
   RequestOverview,
+  ReviewRecord,
   RunPanel,
   SentBackHistory,
 } from "./components";
-import { formatDate } from "./format";
 import type {
   Instructions,
   Outcome,
@@ -102,7 +105,7 @@ function useDashboardPolling(options: {
   }, [onExpireResume, resumingId]);
 }
 
-export function App() {
+function useDashboardController() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<RequestDetail | null>(null);
@@ -114,6 +117,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<NoticeState | null>(null);
   const [resumingId, setResumingId] = useState<string | null>(null);
+  const [copilotOpen, setCopilotOpen] = useState<boolean>(readCopilotOpen);
 
   const loadQueue = useCallback(async () => {
     setQueueState("loading");
@@ -228,93 +232,150 @@ export function App() {
     }
   }
 
-  function selectRequest(id: string) {
-    setSelectedId(id);
-    setNotice(null);
-    setResumingId(null);
-  }
-
   const maxCap = Math.max(queue.length, 1);
   const runCap = Math.min(cap, maxCap);
 
-  function initiateProcessing() {
-    void post(
-      "/api/runs",
-      `Processing started for up to ${String(runCap)} waiting requests.`,
-      { cap: runCap },
-    );
-  }
+  const handleCopilotMutated = useCallback(() => {
+    void Promise.all([
+      loadQueue(),
+      loadRun(),
+      selectedId ? loadDetail(selectedId) : Promise.resolve(),
+    ]);
+  }, [loadDetail, loadQueue, loadRun, selectedId]);
 
-  function recordReview(outcome: Outcome, notes: string, reviewedBy: string) {
-    if (!selectedId) return;
-    void post(`/api/requests/${selectedId}/review`, "Review recorded.", {
-      outcome,
-      notes,
-      reviewed_by: reviewedBy,
-    });
-  }
+  return {
+    queue,
+    selectedId,
+    detail,
+    instructions,
+    run,
+    queueState,
+    detailError,
+    busy,
+    active,
+    notice,
+    runCap,
+    maxCap,
+    copilotOpen,
+    setCap,
+    selectRequest: (id: string) => {
+      setSelectedId(id);
+      setNotice(null);
+      setResumingId(null);
+    },
+    refreshQueue: () => void loadQueue(),
+    initiateProcessing: () => {
+      void post(
+        "/api/runs",
+        `Processing started for up to ${String(runCap)} waiting requests.`,
+        { cap: runCap },
+      );
+    },
+    recordReview: (outcome: Outcome, notes: string, reviewedBy: string) => {
+      if (!selectedId) return;
+      void post(`/api/requests/${selectedId}/review`, "Review recorded.", {
+        outcome,
+        notes,
+        reviewed_by: reviewedBy,
+      });
+    },
+    sendBackRequest: (note: string, sentBackBy: string) => {
+      if (!selectedId) return;
+      setResumingId(selectedId);
+      void post(
+        `/api/requests/${selectedId}/send_back`,
+        "Request sent back to agent.",
+        { note, sent_back_by: sentBackBy },
+      ).then((ok) => {
+        if (!ok) {
+          setResumingId((current) => (current === selectedId ? null : current));
+        }
+      });
+    },
+    handleCopilotMutated,
+    toggleCopilot: () => {
+      setCopilotOpen((current) => {
+        const next = !current;
+        writeCopilotOpen(next);
+        return next;
+      });
+    },
+  };
+}
 
-  async function resumeAfterSendBack(
-    requestId: string,
-    note: string,
-    sentBackBy: string,
-  ) {
-    setResumingId(requestId);
-    const ok = await post(
-      `/api/requests/${requestId}/send_back`,
-      "Request sent back to agent.",
-      { note, sent_back_by: sentBackBy },
-    );
-    if (!ok) {
-      setResumingId((current) => (current === requestId ? null : current));
-    }
-  }
-
-  function sendBackRequest(note: string, sentBackBy: string) {
-    if (!selectedId) return;
-    void resumeAfterSendBack(selectedId, note, sentBackBy);
-  }
-
-  const refreshQueue = () => void loadQueue();
+export function App() {
+  const state = useDashboardController();
+  const {
+    queue,
+    selectedId,
+    detail,
+    instructions,
+    run,
+    queueState,
+    detailError,
+    busy,
+    active,
+    notice,
+    runCap,
+    maxCap,
+    copilotOpen,
+    setCap,
+    selectRequest,
+    refreshQueue,
+    initiateProcessing,
+    recordReview,
+    sendBackRequest,
+    handleCopilotMutated,
+    toggleCopilot,
+  } = state;
   const selected = queue.find((item) => item.request_id === selectedId);
 
   return (
-    <main className="shell">
-      <Header
-        busy={busy || active}
-        cap={runCap}
-        maxCap={maxCap}
-        onCapChange={setCap}
-        onInitiate={initiateProcessing}
-        onRefresh={refreshQueue}
-      />
-      <NoticeBanner notice={notice} />
-      <RunPanel run={run} />
-      <div className="workspace">
-        <QueuePanel
-          items={queue}
-          selectedId={selectedId}
-          state={queueState}
-          onSelect={selectRequest}
+    <div className={copilotOpen ? "app-frame copilot-open" : "app-frame"}>
+      <main className="shell">
+        <Header
+          busy={busy || active}
+          cap={runCap}
+          maxCap={maxCap}
+          onCapChange={setCap}
+          onInitiate={initiateProcessing}
           onRefresh={refreshQueue}
         />
-        <DetailColumn
-          detail={detail}
-          detailError={detailError}
-          selectedOrderId={selected?.order_id}
-          busy={busy}
-          onReview={recordReview}
-          onSendBack={sendBackRequest}
-        />
-      </div>
-      <InstructionsPanel instructions={instructions} />
-      <footer>
-        <span>Shoppie Support Pilot</span>
-        <span>
-          Sample policies · Agent recommendations require human review
-        </span>
-      </footer>
-    </main>
+        <NoticeBanner notice={notice} />
+        <RunPanel run={run} />
+        <div className="workspace">
+          <QueuePanel
+            items={queue}
+            selectedId={selectedId}
+            state={queueState}
+            onSelect={selectRequest}
+            onRefresh={refreshQueue}
+          />
+          <DetailColumn
+            detail={detail}
+            detailError={detailError}
+            selectedOrderId={selected?.order_id}
+            busy={busy}
+            onReview={recordReview}
+            onSendBack={sendBackRequest}
+          />
+        </div>
+        <InstructionsPanel instructions={instructions} />
+        <footer>
+          <span>Shoppie Support Pilot</span>
+          <span>
+            Sample policies · Agent recommendations require human review
+          </span>
+        </footer>
+      </main>
+      <CopilotSidebar
+        open={copilotOpen}
+        onToggle={toggleCopilot}
+        selectedId={selectedId}
+        onSelectRequest={selectRequest}
+        onMutated={handleCopilotMutated}
+      />
+    </div>
   );
 }
 
@@ -447,66 +508,6 @@ function Header({
         </div>
       </section>
     </>
-  );
-}
-
-function InstructionsPanel({
-  instructions,
-}: Readonly<{ instructions: Instructions | null }>) {
-  return (
-    <details className="instructions-panel panel">
-      <summary>
-        <span>
-          <span className="eyebrow">AGENT CONFIGURATION</span>
-          <strong>Shoppie Agent instructions</strong>
-        </span>
-        <span className="read-only">
-          Read only <span aria-hidden="true">＋</span>
-        </span>
-      </summary>
-      {instructions ? (
-        <>
-          <h3>Running the queue</h3>
-          <pre>{instructions.queue}</pre>
-          <h3>Working a request</h3>
-          <pre>{instructions.request}</pre>
-        </>
-      ) : (
-        <pre>Loading instructions…</pre>
-      )}
-    </details>
-  );
-}
-
-function ReviewRecord({ detail }: Readonly<{ detail: RequestDetail }>) {
-  if (!detail.review) return null;
-  const { outcome, notes, reviewed_by, reviewed_at } = detail.review;
-  const titles: Record<Outcome, string> = {
-    approve: "Approve",
-    decline: "Decline",
-    request_information: "Request information",
-  };
-  const badges: Record<Outcome, string> = {
-    approve: "Approved",
-    decline: "Declined",
-    request_information: "Info requested",
-  };
-  return (
-    <article className="panel review-record">
-      <div className="panel-heading">
-        <div>
-          <p className="eyebrow">SUPPORT REVIEW RECORDED</p>
-          <h2>{titles[outcome]}</h2>
-        </div>
-        <span className={`outcome-pill outcome-${outcome}`}>
-          {badges[outcome]}
-        </span>
-      </div>
-      <p>{notes || "No review notes added."}</p>
-      <small>
-        Reviewed by {reviewed_by} · {formatDate(reviewed_at)} IST
-      </small>
-    </article>
   );
 }
 

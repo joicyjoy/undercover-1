@@ -136,3 +136,86 @@ export interface Instructions {
   queue: string;
   request: string;
 }
+
+export type HandlerRole = "senior_handler" | "handler";
+export type AuthMode = "dev" | "entra";
+
+export interface HandlerProfile {
+  handler_id: string;
+  name: string;
+  role: HandlerRole;
+  title: string;
+  can_sign_off_over_limit: boolean;
+  email: string;
+  auth_mode: AuthMode;
+}
+
+export interface CopilotMe {
+  handler: HandlerProfile;
+  dev_handlers: HandlerProfile[];
+}
+
+export type CopilotTurnStatus =
+  "working" | "waiting_confirmation" | "done" | "failed" | "stopped";
+
+export interface CopilotStep {
+  step_id?: number;
+  turn_id: string;
+  seq: number;
+  kind: string;
+  summary: string;
+  tool_name?: string | null;
+  detail?: Record<string, unknown> | null;
+  duration_ms?: number | null;
+  created_at: string;
+}
+
+export interface CopilotConfirmation {
+  request_id: string;
+  customer_name?: string;
+  payout?: number;
+  recommendation?: string;
+  outcome?: string;
+  note?: string;
+}
+
+export interface CopilotTurn {
+  turn_id: string;
+  conversation_id: string;
+  handler_id: string;
+  user_message: string;
+  assistant_message?: string | null;
+  status: CopilotTurnStatus;
+  confirmation?: CopilotConfirmation | null;
+  error?: string | null;
+  created_at: string;
+  updated_at: string;
+  steps?: CopilotStep[];
+}
+
+export interface CopilotConversationSummary {
+  conversation_id: string;
+  handler_id: string;
+  title: string;
+  status: "idle" | CopilotTurnStatus;
+  active_turn_id?: string | null;
+  turn_started_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CopilotConversation extends CopilotConversationSummary {
+  turns: CopilotTurn[];
+  steps: CopilotStep[];
+}
+
+export interface CopilotTurnStartResult {
+  conversation_id: string;
+  turn: CopilotTurn;
+  call_state: string;
+}
+
+export interface CopilotConfirmResult {
+  conversation: CopilotConversation;
+  call_state: string;
+}
